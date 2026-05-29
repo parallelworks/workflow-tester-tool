@@ -1,0 +1,18 @@
+{
+  "cluster": {
+    "scheduler": false
+  },
+  "resource": {
+    "id": "6950559973dcbb8089f12972",
+    "ip": "gpu.parallel.works",
+    "name": "labcluster",
+    "provider": "managed-cluster",
+    "tags": [],
+    "type": "managed-cluster"
+  },
+  "service": {
+    "directory": "",
+    "download_url": "",
+    "name": ""
+  }
+}

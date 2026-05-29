@@ -1,0 +1,33 @@
+
+────────────────────────────────────────────────────────────
+TEST START
+────────────────────────────────────────────────────────────
+[17:34:58.576] Test:        activate.parallel.works/alvaro/workflows/marketplace.script_submitter.latest/test2
+[17:34:58.576] Kind:        workflows
+[17:34:58.576] Inputs:      /Users/alvarovidaltorreira/projects/2026/tester/activate.parallel.works/alvaro/workflows/marketplace.script_submitter.latest/test2.json
+[17:34:58.576] Output dir:  /Users/alvarovidaltorreira/projects/2026/tester/output/activate.parallel.works/alvaro/workflows/marketplace.script_submitter.latest/test2
+[17:34:58.576] Started at:  2026-05-29T15:34:58Z
+
+────────────────────────────────────────────────────────────
+LAUNCH
+────────────────────────────────────────────────────────────
+[17:34:58.578] Command: pw --platform-host activate.parallel.works workflows run -i /Users/alvarovidaltorreira/projects/2026/tester/activate.parallel.works/alvaro/workflows/marketplace.script_submitter.latest/test2.json --name pw-test: activate.parallel.works/alvaro/workflows/marketplace.script_submitter.latest/test2 -o json marketplace.script_submitter.latest
+[17:34:58.578] Attempt 1/5...
+[17:34:59.507]   exit=1
+[17:34:59.507]   stderr: 2026-05-29T17:34:59+02:00 [FATAL] API error 409 409 Conflict: {"error":true,"message":"Slug 'mp-script-submitter-00017' is already in use"}
+[17:34:59.507]   409 Conflict — will retry
+[17:34:59.507] Attempt 2/5: waiting 10s after 409 Conflict...
+[17:35:10.564]   exit=0
+[17:35:10.565]   stderr: A new version of the PW CLI is available (current: v7.55.0, latest: v7.56.0).
+Run 'pw upgrade' to update.
+[17:35:10.565]   Run launched: slug=mp-script-submitter-00018
+
+────────────────────────────────────────────────────────────
+POLLING
+────────────────────────────────────────────────────────────
+[17:35:15.986] Poll at 5s: status=completed
+
+────────────────────────────────────────────────────────────
+RESULT
+────────────────────────────────────────────────────────────
+[17:35:15.987] Run completed in 17.4s

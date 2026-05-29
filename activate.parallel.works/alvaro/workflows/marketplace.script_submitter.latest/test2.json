@@ -1,0 +1,19 @@
+{
+  "define_cleanup_script": false,
+  "resource": {
+    "$type": "computeResource",
+    "id": "68af39533a57203649e66d6d",
+    "ip": "gpu.parallel.works",
+    "name": "a30gpuserver",
+    "namespace": "alvaro",
+    "provider": "existing",
+    "schedulerType": "",
+    "type": "existing",
+    "uri": "pw://alvaro/a30gpuserver",
+    "user": "alvaro"
+  },
+  "rundir": "",
+  "script": "echo \"$(date) Running in directory ${PWD} on ${HOSTNAME}\"\n",
+  "shebang": "",
+  "use_existing_script": false
+}

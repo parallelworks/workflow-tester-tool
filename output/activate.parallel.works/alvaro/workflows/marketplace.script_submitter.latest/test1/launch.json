@@ -1,0 +1,14 @@
+{
+  "run": {
+    "createdAt": "2026-05-29T15:34:59.516774122Z",
+    "id": "6a19b2233f34ed5c16974dd3",
+    "imageUrl": "/media/app_images/z0f5_blob",
+    "inlineRun": false,
+    "marketplace": true,
+    "number": 17,
+    "slug": "mp-script-submitter-00017",
+    "status": "running",
+    "user": "alvaro",
+    "workflowName": "marketplace.script_submitter.latest"
+  }
+}
