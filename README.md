@@ -1,14 +1,22 @@
 # PW Workflow Testing Framework
 
-> A CLI for automated testing of Parallel Works ACTIVATE workflows and sessions.
+> A CLI and web dashboard for automated testing of Parallel Works ACTIVATE workflows and sessions.
 
-A CLI tool for running automated tests against [Parallel Works ACTIVATE](https://parallelworks.com) workflows using the [`pw` CLI](https://parallelworks.com/docs/cli/pw/workflows).
+A tool for running automated tests against [Parallel Works ACTIVATE](https://parallelworks.com) workflows using the [`pw` CLI](https://parallelworks.com/docs/cli/pw/workflows). Tests are defined as plain JSON files containing workflow inputs. The framework runs them in parallel, polls for results, and produces a structured output tree with logs and artifacts for every test. A web dashboard lets you browse results and inspect inputs at a glance.
 
-Tests are defined as plain JSON files containing workflow inputs. The framework runs them in parallel, polls for results, and produces a structured output tree with logs and artifacts for every test.
+## Quick start
+
+```bash
+# Run all tests
+python run_tests.py
+
+# Open the dashboard
+python serve.py          # → http://localhost:8080
+```
 
 ## Directory structure
 
-Tests live under a four-level hierarchy:
+Tests live under a five-level hierarchy:
 
 ```
 <platform>/<user>/workflows/<workflow>/<test-name>.json
@@ -38,11 +46,9 @@ Use `sessions` for workflows that start an interactive session and run indefinit
 activate.parallel.works/
 └── alvaro/
     ├── workflows/
-    │   ├── marketplace.script_submitter.latest/
-    │   │   ├── test1.json          # script with sleep
-    │   │   └── test2.json          # fast echo-only script
-    │   └── testaaaa/
-    │       └── inputs.json
+    │   └── marketplace.script_submitter.latest/
+    │       ├── test1.json          # script with sleep
+    │       └── test2.json          # fast echo-only script
     └── sessions/
         └── marketplace.openvscode.latest/
             └── inputs.json         # starts a VS Code session
@@ -68,16 +74,10 @@ Each `.json` file is the raw input object for the workflow, identical to what yo
 }
 ```
 
-## Usage
-
-```
-python run_tests.py [options]
-```
-
-### Run all tests
+## Running tests
 
 ```bash
-python run_tests.py
+python run_tests.py [options]
 ```
 
 ### Filter by scope
@@ -104,13 +104,57 @@ python run_tests.py --test-file activate.parallel.works/alvaro/workflows/\
     marketplace.script_submitter.latest/test1.json
 ```
 
-### Other flags
+### Flags
 
 | Flag | Default | Description |
 |---|---|---|
 | `--output-dir DIR` | `./output/` | Root for test output files |
 | `--workers N` | `10` | Max parallel test runners |
 | `--dry-run` | — | Discover and list tests without running them |
+
+## Web dashboard
+
+`serve.py` starts an HTTP server that reads the `output/` directory and renders a live dashboard.
+
+```bash
+python serve.py                        # http://localhost:8080
+python serve.py --port 9000            # custom port
+python serve.py --output-dir /path/to/output
+```
+
+### Dashboard features
+
+- **Summary cards** — total tests, pass rate, failed count, time of last run
+- **Breakdowns** — by status, by workflow, by kind (workflows vs sessions)
+- **Filterable table** — search by test name or workflow; filter by status, workflow, kind
+- **Detail view** — click any row to see the `inputs.json` with syntax highlighting
+- **Dark / light theme** — toggled and persisted per browser
+- **Auto-refresh** — data reloads every 3 minutes
+
+### Serving behind a reverse proxy
+
+The dashboard works at any URL prefix (e.g. `https://activate.parallel.works/me/session/alvaro/test/`) with no configuration required. The server auto-detects the prefix from incoming request paths and the frontend derives its API base URL from `window.location` at runtime.
+
+If the proxy forwards the full path to the container (no prefix stripping), you can also set the prefix explicitly:
+
+```bash
+# CLI flag
+python serve.py --prefix /me/session/alvaro/test
+
+# Environment variable
+PW_BASE_PATH=/me/session/alvaro/test python serve.py
+```
+
+The server also honours the `X-Forwarded-Prefix` header when set by the proxy.
+
+### Dashboard flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--host HOST` | `0.0.0.0` | Bind address |
+| `--port PORT` | `8080` | Bind port |
+| `--output-dir DIR` | `./output/` | Root directory of test outputs to display |
+| `--prefix PREFIX` | `$PW_BASE_PATH` | URL prefix to strip (for reverse proxy deployments) |
 
 ## Output structure
 
@@ -144,33 +188,11 @@ output/
   "test": "activate.parallel.works/alvaro/workflows/marketplace.script_submitter.latest/test1",
   "kind": "workflows",
   "status": "completed",
-  "slug": "mp-script-submitter-00016",
-  "duration_s": 39.2,
-  "started_at": "2026-05-29T15:00:47Z",
+  "slug": "mp-script-submitter-00017",
+  "duration_s": 28.3,
+  "started_at": "2026-05-29T15:34:58Z",
   "error": null
 }
-```
-
-### `run.log` (excerpt)
-
-```
-────────────────────────────────────────────────────────────
-TEST START
-────────────────────────────────────────────────────────────
-[17:00:47.153] Test:        activate.parallel.works/alvaro/sessions/marketplace.openvscode.latest/inputs
-[17:00:47.153] Kind:        sessions
-...
-────────────────────────────────────────────────────────────
-WAITING FOR HEALTHY SESSION
-────────────────────────────────────────────────────────────
-[17:02:53.940] Session at 120s: name=marketplace.openvscode.latest_60_session status=running healthy=True
-
-────────────────────────────────────────────────────────────
-SESSION HEALTHY — CANCELING RUN
-────────────────────────────────────────────────────────────
-[17:02:53.941] Canceling run mp-openvscode-00060...
-[17:02:54.369]   cancel exit=0: Run mp-openvscode-00060 canceled
-[17:02:54.369] Session test passed in 127.2s
 ```
 
 ## Terminal statuses
@@ -185,11 +207,11 @@ SESSION HEALTHY — CANCELING RUN
 | `timeout` | Exceeded per-test timeout (1 hour for workflows, 30 min for sessions) |
 | `internal_error` | Unhandled exception in the test runner |
 
-## Error handling details
+## Error handling
 
 - **409 Conflict** — the platform serialises simultaneous runs of the same workflow. The launcher retries up to 5 times with exponential backoff (10 s, 20 s, 40 s, …).
 - **ANSI codes** — all `pw` CLI color codes are stripped from captured output before writing to logs or `result.json`.
-- **Subprocess timeouts** — every `pw` call has a hard timeout; a hung command becomes `rc=-1` and is handled like any other error without stalling the test.
+- **Subprocess timeouts** — every `pw` call has a hard timeout; a hung command becomes `rc=-1` without stalling the test.
 - **Invalid inputs** — the inputs file is parsed as JSON before launch; a syntax error is reported as `launch_failed` immediately without hitting the API.
 
 ## Prerequisites
@@ -216,9 +238,9 @@ Running 3 test(s) in parallel (workers=10)...
 ================================================================================================
   WORKFLOW TEST RESULTS
 ================================================================================================
-  ✓  [sess]  …/sessions/marketplace.openvscode.latest/inputs    completed    106.6s  mp-openvscode-00061
-  ✓  [work]  …/workflows/marketplace.script_submitter.latest/test1  completed  28.3s  mp-script-submitter-00017
-  ✓  [work]  …/workflows/marketplace.script_submitter.latest/test2  completed  17.4s  mp-script-submitter-00018
+  ✓  [sess]  …/sessions/marketplace.openvscode.latest/inputs        completed    106.6s  mp-openvscode-00061
+  ✓  [work]  …/workflows/marketplace.script_submitter.latest/test1  completed     28.3s  mp-script-submitter-00017
+  ✓  [work]  …/workflows/marketplace.script_submitter.latest/test2  completed     17.4s  mp-script-submitter-00018
 ------------------------------------------------------------------------------------------------
   Total: 3  |  Passed: 3  |  Failed: 0
 ================================================================================================
