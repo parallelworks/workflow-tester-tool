@@ -1,0 +1,21 @@
+{
+  "cluster": {
+    "scheduler": false
+  },
+  "container_runtime": "kasmvnc-singularity",
+  "desktop": {
+    "kasmvnc_os": "rocky9"
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "691ef31bb590f2f8963cda1f",
+    "ip": "barfoot.erdc.hpc.mil",
+    "name": "barfoot",
+    "namespace": "mshaxted",
+    "provider": "existing",
+    "schedulerType": "pbs",
+    "type": "existing",
+    "uri": "pw://mshaxted/barfoot",
+    "user": "mshaxted"
+  }
+}
