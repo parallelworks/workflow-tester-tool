@@ -29,7 +29,12 @@ jobs:
       - name: Restore outputs from bucket
         run: |
           echo "::group::Restore outputs from bucket"
+          # pw buckets cp -r copies the CONTENTS of the source path into the
+          # destination, so we always restore explicitly into output/ to produce
+          # output/<platform>/<user>/... rather than <platform>/<user>/... at
+          # the job root.
           BUCKET_PATH="${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}/output"
+          echo "::notice::Expected local structure: output/${PW_PLATFORM_HOST}/${PW_USER}/..."
           echo "::notice::Checking bucket path: ${BUCKET_PATH}"
 
           if ! pw buckets ls "${BUCKET_PATH}" > /dev/null 2>&1; then
@@ -38,9 +43,9 @@ jobs:
             exit 0
           fi
 
-          echo "::notice::Restoring from ${BUCKET_PATH}"
-          rm -rf output
-          pw buckets cp -r "${BUCKET_PATH}" .
+          echo "::notice::Restoring contents of ${BUCKET_PATH} into output/"
+          rm -rf output && mkdir -p output
+          pw buckets cp -r "${BUCKET_PATH}" output/
 
           echo "::notice::Validating output directory structure"
           expected="output/${PW_PLATFORM_HOST}/${PW_USER}"
@@ -137,7 +142,7 @@ jobs:
         default: workflow-tester-tool
         tooltip: |
           Path inside the bucket where test outputs are stored and retrieved.
-          Results are saved as <path>/output/<platform>/<user>/...
+          Results are saved as bucket_path/output/platform/user/...
       run_tests:
         type: boolean
         label: Run Tests
