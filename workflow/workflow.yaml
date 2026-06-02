@@ -8,9 +8,8 @@ env:
   PW_API_KEY: ${{ env.PW_API_KEY }}
 
 sessions:
-  session:
+  dashboard:
     redirect: true
-    port: 8080
 
 jobs:
   setup:
@@ -22,6 +21,10 @@ jobs:
         with:
           repo: git@github.com:parallelworks/workflow-tester-tool.git
           branch: add-activate-workflow
+      - name: Get Session Port
+        run: |
+          SESSION_PORT=$(pw agent open-port)
+          echo "SESSION_PORT=${SESSION_PORT}" | tee -a $OUTPUTS
 
   run_tests:
     needs:
@@ -30,6 +33,7 @@ jobs:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
       - name: Run Tests
+        early-cancel: any-job-failed
         run: |
           set -x
           echo "PW_PLATFORM_HOST=${PW_PLATFORM_HOST:-NOT_SET}"
@@ -43,22 +47,38 @@ jobs:
   serve:
     needs:
       - setup
-    sessions:
-      - session
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
       - name: Start Dashboard
+        early-cancel: any-job-failed
         run: |
-          cd ${PW_PARENT_JOB_DIR}
+          export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.dashboard }}
           python3 serve.py \
-            --port 8080 \
+            --port ${{ needs.setup.outputs.SESSION_PORT }} \
             --output-dir ${PW_PARENT_JOB_DIR}/output/${PW_PLATFORM_HOST} &
           echo $! > ${PW_PARENT_JOB_DIR}/service.pid
           sleep inf
         cleanup: |
           pid=$(cat ${PW_PARENT_JOB_DIR}/service.pid 2>/dev/null)
           [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
+
+
+  create_session:
+    needs:
+      - setup
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Create DashboardSession
+        early-cancel: any-job-failed
+        uses: parallelworks/update-session
+        with:
+          target: ${{ inputs.resource.id }}
+          name: ${{ sessions.dashboard }}
+          remoteHost: 0.0.0.0
+          remotePort: ${{ needs.setup.outputs.SESSION_PORT }}
+
 
 'on':
   execute:
