@@ -22,11 +22,17 @@ jobs:
           repo: git@github.com:parallelworks/workflow-tester-tool.git
           branch: add-activate-workflow
       - name: Get Session Port
+        if: ${{ inputs.serve_dashboard }}
         run: |
           SESSION_PORT=$(pw agent open-port)
           echo "SESSION_PORT=${SESSION_PORT}" | tee -a $OUTPUTS
+      - name: Restore outputs from bucket
+        run: |
+          rm -rf output
+          pw buckets cp -r ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }} output || true
 
   run_tests:
+    if: ${{ inputs.run_tests }}
     needs:
       - setup
     ssh:
@@ -43,8 +49,12 @@ jobs:
           python3 -u run_tests.py \
             --platform "${PW_PLATFORM_HOST}" \
             --user "${PW_USER}"
+      - name: Transfer outputs to bucket
+        run: |
+          pw buckets cp -r output ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}
 
   serve:
+    if: ${{ inputs.serve_dashboard }}
     needs:
       - setup
     ssh:
@@ -65,6 +75,7 @@ jobs:
 
 
   create_session:
+    if: ${{ inputs.serve_dashboard }}
     needs:
       - setup
     ssh:
@@ -88,5 +99,35 @@ jobs:
         label: Resource
         include-workspace: true
         tooltip: |
-          User workspace or the login/controller node of any connected cluster.
-          The pw CLI must be reachable at $HOME/pw/pw on the chosen resource.
+          Resource to run tests on and host the dashboard.
+          Use the user workspace or the login node of any connected cluster.
+      bucket:
+        type: bucket
+        label: Output Storage Bucket
+        tooltip: |
+          Bucket where test results are stored between runs.
+          Existing results are restored from the bucket at startup;
+          new results are uploaded after the test run completes.
+      bucket_path:
+        type: string
+        label: Path in Bucket
+        default: workflow-tester-tool/outputs
+        tooltip: |
+          Path inside the bucket where test outputs are saved and retrieved.
+          Results are stored under this path as output/<platform>/<user>/...
+      run_tests:
+        type: boolean
+        label: Run Tests
+        default: true
+        tooltip: |
+          Yes → Run all workflow and session tests matching the current user
+                and platform, then upload results to the bucket.
+          No  → Skip test execution; useful when serving a dashboard of
+                previously stored results.
+      serve_dashboard:
+        type: boolean
+        label: Serve Dashboard
+        default: true
+        tooltip: |
+          Yes → Start the test results dashboard as an interactive session.
+          No  → Run tests in batch mode only, with no web interface.
