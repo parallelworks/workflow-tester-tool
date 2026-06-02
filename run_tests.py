@@ -519,13 +519,15 @@ def _run_session_test(
 
         session = matched[0]
         sess_status = session.get("status", "").lower()
-        healthy = session.get("healthy", False)
+        healthy = session.get("healthy")  # None means platform doesn't expose this field
         logger.log(
             f"Session at {elapsed}s: name={session.get('name')} "
             f"status={sess_status} healthy={healthy}"
         )
 
-        if sess_status == SESSION_HEALTHY_STATUS and healthy:
+        # Cancel as soon as status is running and healthy is not explicitly False.
+        # healthy=None means the platform doesn't expose the field — trust status alone.
+        if sess_status == SESSION_HEALTHY_STATUS and healthy is not False:
             # ── Success ───────────────────────────────────────────────────────
             logger.section("SESSION HEALTHY — CANCELING RUN")
             _save(out_dir / "session.json", json.dumps(session, indent=2))
