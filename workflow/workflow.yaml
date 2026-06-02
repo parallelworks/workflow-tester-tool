@@ -17,7 +17,7 @@ jobs:
         uses: parallelworks/checkout
         with:
           repo: https://github.com/parallelworks/workflow-tester-tool.git
-          branch: add-activate-workflow
+          branch: main
       - name: Get Session Port
         if: ${{ inputs.serve_dashboard }}
         run: |
