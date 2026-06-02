@@ -4,7 +4,33 @@
 
 A tool for running automated tests against [Parallel Works ACTIVATE](https://parallelworks.com) workflows using the [`pw` CLI](https://parallelworks.com/docs/cli/pw/workflows). Tests are defined as plain JSON files containing workflow inputs. The framework runs them in parallel, polls for results, and produces a structured output tree with logs and artifacts for every test. A web dashboard lets you browse results and inspect inputs at a glance.
 
-## Quick start
+## Running on ACTIVATE (recommended)
+
+The easiest way to run tests is directly from the ACTIVATE platform using the **Workflow Tester** workflow (`workflow/workflow.yaml`). It handles everything automatically:
+
+1. **Checks out** this repository on the selected resource.
+2. **Restores** any previous test results from cloud storage.
+3. **Runs all tests** for the current user and platform in parallel.
+4. **Saves results** back to cloud storage.
+5. **Serves the dashboard** as an interactive session you can open in your browser.
+
+### Workflow inputs
+
+| Input | Description |
+|---|---|
+| **Resource** | Where to run — your workspace or any connected cluster login node. |
+| **Output Storage Bucket** | Bucket where results are saved between runs. |
+| **Output Path in Bucket** | Path inside the bucket for this project's results (e.g. `workflow-tester-tool/output`). Results land at `<path>/<platform>/<user>/...`. |
+| **Run Tests** | Yes → run tests and upload results. No → just serve the dashboard from saved results. |
+| **Serve Dashboard** | Yes → open an interactive dashboard session. No → run in batch mode only. |
+
+### Output storage
+
+Results are stored in the bucket at `<output-path>/<platform>/<user>/...` and restored automatically at the start of each run, so the dashboard always shows the full history across runs.
+
+---
+
+## Running locally
 
 ```bash
 # Run all tests
