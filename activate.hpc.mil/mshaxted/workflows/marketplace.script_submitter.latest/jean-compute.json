@@ -1,0 +1,24 @@
+{
+  "resource": {
+    "$type": "computeResource",
+    "id": "689b63666c2282f50aa6c791",
+    "ip": "jean.arl.hpc.mil",
+    "name": "jean",
+    "namespace": "mshaxted",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://mshaxted/jean",
+    "user": "mshaxted"
+  },
+  "rundir": "",
+  "scheduler": true,
+  "script": "echo \"$(date) Running in directory ${PWD} on ${HOSTNAME}\"\n",
+  "shebang": "",
+  "slurm": {
+    "account": "hpcmo49636prw",
+    "partition": "debug",
+    "qos": "normal"
+  },
+  "use_existing_script": false
+}

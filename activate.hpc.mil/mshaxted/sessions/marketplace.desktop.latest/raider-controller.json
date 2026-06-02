@@ -1,0 +1,26 @@
+{
+  "cluster": {
+    "scheduler": true,
+    "slurm": {
+      "account": "hpcmo49636prw",
+      "partition": "general",
+      "qos": "debug"
+    }
+  },
+  "container_runtime": "kasmvnc-singularity",
+  "desktop": {
+    "kasmvnc_os": "rocky9"
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "68dfca0a697548e72446ea8c",
+    "ip": "raider.afrl.hpc.mil",
+    "name": "raider",
+    "namespace": "mshaxted",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://mshaxted/raider",
+    "user": "mshaxted"
+  }
+}
