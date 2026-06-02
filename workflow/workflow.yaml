@@ -28,39 +28,11 @@ jobs:
           echo "SESSION_PORT=${SESSION_PORT}" | tee -a $OUTPUTS
       - name: Restore outputs from bucket
         run: |
-          echo "::group::Restore outputs from bucket"
           BUCKET_PATH="${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}/output"
-          echo "::notice::Expected local structure: output/${PW_PLATFORM_HOST}/${PW_USER}/..."
-          echo "::notice::Checking bucket path: ${BUCKET_PATH}"
-
-          bucket_listing=$(pw buckets ls "${BUCKET_PATH}" 2>&1)
-          if [ $? -ne 0 ] || [ -z "${bucket_listing}" ]; then
-            echo "::warning::${BUCKET_PATH} not found or empty — skipping restore (expected on first run)"
-            echo "::endgroup::"
-            exit 0
-          fi
-          echo "::notice::Bucket contents:"
-          echo "${bucket_listing}" | sed 's/^/  /'
-
-          # Copy to a temp dir then rename to output/ to avoid ambiguous
-          # behaviour when the destination already exists.
-          RESTORE_TMP="${PW_PARENT_JOB_DIR}/_restore_tmp"
-          rm -rf "${RESTORE_TMP}" output
-          echo "::notice::Downloading ${BUCKET_PATH} → ${RESTORE_TMP}"
-          pw buckets cp -r "${BUCKET_PATH}" "${RESTORE_TMP}"
-          mv "${RESTORE_TMP}" output
-
-          echo "::notice::Validating output directory structure"
-          expected="output/${PW_PLATFORM_HOST}/${PW_USER}"
-          if [ ! -d "${expected}" ]; then
-            echo "::error title=Invalid bucket structure::Expected output/${PW_PLATFORM_HOST}/${PW_USER}/ not found. Actual structure:"
-            find output -maxdepth 3 -type d 2>/dev/null | sed 's/^/  /'
-            echo "::endgroup::"
-            exit 1
-          fi
-
-          echo "::notice::Restore complete — ${expected}/"
-          echo "::endgroup::"
+          rm -rf output
+          pw buckets cp -r "${BUCKET_PATH}" output \
+            && echo "::notice::Outputs restored from ${BUCKET_PATH}" \
+            || echo "::warning::No outputs found at ${BUCKET_PATH} — starting fresh"
 
   run_tests:
     if: ${{ inputs.run_tests }}
