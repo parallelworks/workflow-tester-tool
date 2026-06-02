@@ -28,7 +28,7 @@ jobs:
           echo "SESSION_PORT=${SESSION_PORT}" | tee -a $OUTPUTS
       - name: Restore outputs from bucket
         run: |
-          BUCKET_PATH="${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}/output"
+          BUCKET_PATH="${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}"
           rm -rf output
           pw buckets cp -r "${BUCKET_PATH}" output \
             && echo "::notice::Outputs restored from ${BUCKET_PATH}" \
@@ -54,7 +54,7 @@ jobs:
             --user "${PW_USER}"
       - name: Transfer outputs to bucket
         run: |
-          pw buckets cp -r output ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}/output
+          pw buckets cp -r output ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}
 
   serve:
     if: ${{ inputs.serve_dashboard }}
@@ -113,11 +113,11 @@ jobs:
           new results are uploaded after the test run completes.
       bucket_path:
         type: string
-        label: Path in Bucket
-        default: workflow-tester-tool
+        label: Output Path in Bucket
+        default: workflow-tester-tool/output
         tooltip: |
-          Path inside the bucket where test outputs are stored and retrieved.
-          Results are saved as bucket_path/output/platform/user/...
+          Full path to the output directory inside the bucket.
+          Results are saved as <path>/platform/user/...
       run_tests:
         type: boolean
         label: Run Tests
