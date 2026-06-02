@@ -1,16 +1,13 @@
 # yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
 permissions:
   - '*'
-
 env:
   PW_PLATFORM_HOST: ${{ env.PW_PLATFORM_HOST }}
   PW_USER: ${{ env.PW_USER }}
   PW_API_KEY: ${{ env.PW_API_KEY }}
-
 sessions:
   dashboard:
     redirect: true
-
 jobs:
   setup:
     ssh:
@@ -30,10 +27,9 @@ jobs:
         run: |
           BUCKET_PATH="${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}"
           rm -rf output
-          pw buckets cp -r "${BUCKET_PATH}" output \
+          pw buckets cp -r "${BUCKET_PATH}/" output/ \
             && echo "::notice::Outputs restored from ${BUCKET_PATH}" \
             || echo "::warning::No outputs found at ${BUCKET_PATH} — starting fresh"
-
   run_tests:
     if: ${{ inputs.run_tests }}
     needs:
@@ -55,7 +51,6 @@ jobs:
       - name: Transfer outputs to bucket
         run: |
           pw buckets cp -r output ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}
-
   serve:
     if: ${{ inputs.serve_dashboard }}
     needs:
@@ -75,8 +70,6 @@ jobs:
         cleanup: |
           pid=$(cat ${PW_PARENT_JOB_DIR}/service.pid 2>/dev/null)
           [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
-
-
   create_session:
     if: ${{ inputs.serve_dashboard }}
     needs:
@@ -92,8 +85,6 @@ jobs:
           name: ${{ sessions.dashboard }}
           remoteHost: 0.0.0.0
           remotePort: ${{ needs.setup.outputs.SESSION_PORT }}
-
-
 'on':
   execute:
     inputs:
@@ -117,7 +108,7 @@ jobs:
         default: workflow-tester-tool/output
         tooltip: |
           Full path to the output directory inside the bucket.
-          Results are saved as <path>/platform/user/...
+          Results are saved as path/platform/user/...
       run_tests:
         type: boolean
         label: Run Tests
