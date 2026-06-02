@@ -1,0 +1,66 @@
+# yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
+permissions:
+  - '*'
+
+env:
+  PW_PLATFORM_HOST: ${{ env.PW_PLATFORM_HOST }}
+  PW_USER: ${{ env.PW_USER }}
+  PW_API_KEY: ${{ env.PW_API_KEY }}
+
+sessions:
+  session:
+    redirect: true
+
+jobs:
+  setup:
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Checkout
+        uses: parallelworks/checkout
+        with:
+          repo: https://github.com/parallelworks/workflow-tester-tool.git
+          branch: main
+
+  run_tests:
+    needs:
+      - setup
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Run Tests
+        run: |
+          export PATH=$HOME/pw:$PATH
+          cd ${PW_PARENT_JOB_DIR}
+          python3 run_tests.py \
+            --platform ${PW_PLATFORM_HOST} \
+            --user ${PW_USER}
+
+  serve:
+    needs:
+      - setup
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Start Dashboard
+        run: |
+          cd ${PW_PARENT_JOB_DIR}
+          python3 serve.py \
+            --port ${{ sessions.session.port }} \
+            --output-dir ${PW_PARENT_JOB_DIR}/output/${PW_PLATFORM_HOST} &
+          echo $! > ${PW_PARENT_JOB_DIR}/service.pid
+          sleep inf
+        cleanup: |
+          pid=$(cat ${PW_PARENT_JOB_DIR}/service.pid 2>/dev/null)
+          [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
+
+'on':
+  execute:
+    inputs:
+      resource:
+        type: compute-clusters
+        label: Resource
+        include-workspace: true
+        tooltip: |
+          User workspace or the login/controller node of any connected cluster.
+          The pw CLI must be reachable at $HOME/pw/pw on the chosen resource.
