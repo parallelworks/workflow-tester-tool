@@ -29,23 +29,26 @@ jobs:
       - name: Restore outputs from bucket
         run: |
           echo "::group::Restore outputs from bucket"
-          # pw buckets cp -r copies the CONTENTS of the source path into the
-          # destination, so we always restore explicitly into output/ to produce
-          # output/<platform>/<user>/... rather than <platform>/<user>/... at
-          # the job root.
           BUCKET_PATH="${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}/output"
           echo "::notice::Expected local structure: output/${PW_PLATFORM_HOST}/${PW_USER}/..."
           echo "::notice::Checking bucket path: ${BUCKET_PATH}"
 
-          if ! pw buckets ls "${BUCKET_PATH}" > /dev/null 2>&1; then
-            echo "::warning::${BUCKET_PATH} not found in bucket — skipping restore (expected on first run)"
+          bucket_listing=$(pw buckets ls "${BUCKET_PATH}" 2>&1)
+          if [ $? -ne 0 ] || [ -z "${bucket_listing}" ]; then
+            echo "::warning::${BUCKET_PATH} not found or empty — skipping restore (expected on first run)"
             echo "::endgroup::"
             exit 0
           fi
+          echo "::notice::Bucket contents:"
+          echo "${bucket_listing}" | sed 's/^/  /'
 
-          echo "::notice::Restoring contents of ${BUCKET_PATH} into output/"
-          rm -rf output && mkdir -p output
-          pw buckets cp -r "${BUCKET_PATH}" output/
+          # Copy to a temp dir then rename to output/ to avoid ambiguous
+          # behaviour when the destination already exists.
+          RESTORE_TMP="${PW_PARENT_JOB_DIR}/_restore_tmp"
+          rm -rf "${RESTORE_TMP}" output
+          echo "::notice::Downloading ${BUCKET_PATH} → ${RESTORE_TMP}"
+          pw buckets cp -r "${BUCKET_PATH}" "${RESTORE_TMP}"
+          mv "${RESTORE_TMP}" output
 
           echo "::notice::Validating output directory structure"
           expected="output/${PW_PLATFORM_HOST}/${PW_USER}"
