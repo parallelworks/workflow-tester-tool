@@ -14,11 +14,13 @@
       // (e.g. https://activate.parallel.works/me/session/alvaro/test/).
       function deriveBasePath(pathname) {
         var path = pathname || "/";
-        if (path.endsWith("/") || path.indexOf("/index.html") > -1) {
-          return path;
+        if (path.indexOf("/index.html") > -1) {
+          var lastSlash = path.lastIndexOf("/");
+          return (lastSlash >= 0 ? path.slice(0, lastSlash + 1) : "/");
         }
-        var lastSlash = path.lastIndexOf("/");
-        return (lastSlash >= 0 ? path.slice(0, lastSlash + 1) : "/");
+        // Append trailing slash so relative api/results fetch resolves under
+        // this page, not its parent (e.g. /me/session/user/name → /me/session/user/name/).
+        return path.endsWith("/") ? path : path + "/";
       }
       var path = deriveBasePath(window.location.pathname || "/");
       var base = document.createElement("base");

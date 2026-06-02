@@ -1,9 +1,0 @@
-{
-  "test": "activate.parallel.works/alvaro/workflows/marketplace.script_submitter.latest/test1",
-  "kind": "workflows",
-  "status": "completed",
-  "slug": "mp-script-submitter-00017",
-  "duration_s": 28.32,
-  "started_at": "2026-05-29T15:34:58Z",
-  "error": null
-}

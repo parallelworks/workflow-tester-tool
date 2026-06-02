@@ -21,10 +21,13 @@ Usage:
 import argparse
 import datetime
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -51,6 +54,44 @@ TERMINAL = {"completed", "error", "canceled", "failed"}
 KINDS = ("workflows", "sessions")
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mKHJ]")
+
+# ── Active run tracking (for signal-handler cancellation) ─────────────────────
+
+_active: dict[str, "TestCase"] = {}
+_active_lock = threading.Lock()
+
+
+def _track(slug: str, test: "TestCase") -> None:
+    with _active_lock:
+        _active[slug] = test
+
+
+def _untrack(slug: str) -> None:
+    with _active_lock:
+        _active.pop(slug, None)
+
+
+def _cancel_all_active() -> None:
+    with _active_lock:
+        items = list(_active.items())
+    if not items:
+        return
+    print(f"\nCanceling {len(items)} active platform run(s)...", flush=True)
+    for slug, test in items:
+        rc, _, err = _cmd(
+            ["pw", "--platform-host", test.platform,
+             "workflows", "runs", "cancel", slug],
+            timeout=30,
+        )
+        print(f"  {slug}: {'ok' if rc == 0 else err[:100]}", flush=True)
+
+
+def _setup_signal_handlers() -> None:
+    def _handler(_sig, _frame):
+        _cancel_all_active()
+        os._exit(1)
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
 
 
 def strip_ansi(text: str) -> str:
@@ -276,6 +317,7 @@ def _launch(
             try:
                 slug = json.loads(out)["run"]["slug"]
                 logger.log(f"  Run launched: slug={slug}")
+                _track(slug, test)
                 return slug
             except (json.JSONDecodeError, KeyError) as exc:
                 result.status = "launch_failed"
@@ -519,13 +561,15 @@ def _run_session_test(
 
         session = matched[0]
         sess_status = session.get("status", "").lower()
-        healthy = session.get("healthy", False)
+        healthy = session.get("healthy")  # None means platform doesn't expose this field
         logger.log(
             f"Session at {elapsed}s: name={session.get('name')} "
             f"status={sess_status} healthy={healthy}"
         )
 
-        if sess_status == SESSION_HEALTHY_STATUS and healthy:
+        # Cancel as soon as status is running and healthy is not explicitly False.
+        # healthy=None means the platform doesn't expose the field — trust status alone.
+        if sess_status == SESSION_HEALTHY_STATUS and healthy is not False:
             # ── Success ───────────────────────────────────────────────────────
             logger.section("SESSION HEALTHY — CANCELING RUN")
             _save(out_dir / "session.json", json.dumps(session, indent=2))
@@ -589,6 +633,8 @@ def run_test(test: TestCase, output_base: Path) -> TestResult:
         _write_result(result, started_at)
         return result
     finally:
+        if result.slug:
+            _untrack(result.slug)
         logger.close()
 
 
@@ -633,6 +679,7 @@ def print_summary(results: list[TestResult], output_base: Path) -> bool:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    _setup_signal_handlers()
     ap = argparse.ArgumentParser(
         description="PW Workflow Testing Framework",
         formatter_class=argparse.RawDescriptionHelpFormatter,

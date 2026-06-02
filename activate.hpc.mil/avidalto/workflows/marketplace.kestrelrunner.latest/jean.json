@@ -1,0 +1,35 @@
+{
+  "advanced_options": {
+    "script": "echo \"$(date) Starting job\"\n${LOAD_CREATE}\n${CREATE_HOME}/av/kestrel/${KESTREL_VERSION}/bin/csi -i ${XML_PATH} -p ${NUM_PROCESSOR}\n",
+    "shebang": ""
+  },
+  "kestrel_version": "",
+  "load_create": "",
+  "num_processor": 16,
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3ced5cbf8e314870d530",
+    "ip": "jean.arl.hpc.mil",
+    "name": "jean",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/jean",
+    "user": "avidalto"
+  },
+  "rundir": "",
+  "scheduler": true,
+  "slurm": {
+    "account": "hpcmo49636prw",
+    "cpus_per_task": 1,
+    "gpus": 0,
+    "is_enabled": true,
+    "nodes": 1,
+    "partition": "debug",
+    "qos": "normal",
+    "scheduler_directives": "##SBATCH --constraint=mla # uncomment for Navy and AFRL DSRC systems\n",
+    "time": ""
+  },
+  "xml_path": "/p/home/avidalto/2D_static_aero_run/grids/naca64A010_a4.xml"
+}

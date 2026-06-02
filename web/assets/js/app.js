@@ -7,7 +7,7 @@ function getApiBase() {
   const basePath = document.documentElement.dataset.basePath || "";
   if (basePath) return new URL(basePath, window.location.origin);
   const p = window.location.pathname;
-  const dir = p.endsWith("/") ? p : (p.slice(0, p.lastIndexOf("/") + 1) || "/");
+  const dir = p.endsWith("/") ? p : p + "/";
   return new URL(dir, window.location.origin);
 }
 

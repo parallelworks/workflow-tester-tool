@@ -1,9 +1,0 @@
-{
-  "test": "activate.parallel.works/alvaro/sessions/marketplace.openvscode.latest/inputs",
-  "kind": "sessions",
-  "status": "completed",
-  "slug": "mp-openvscode-00061",
-  "duration_s": 106.59,
-  "started_at": "2026-05-29T15:34:58Z",
-  "error": null
-}
