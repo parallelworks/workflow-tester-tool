@@ -10,6 +10,7 @@ env:
 sessions:
   session:
     redirect: true
+    port: 8080
 
 jobs:
   setup:
@@ -19,7 +20,7 @@ jobs:
       - name: Checkout
         uses: parallelworks/checkout
         with:
-          repo: https://github.com/parallelworks/workflow-tester-tool.git
+          repo: git@github.com:parallelworks/workflow-tester-tool.git
           branch: add-activate-workflow
 
   run_tests:
@@ -30,15 +31,20 @@ jobs:
     steps:
       - name: Run Tests
         run: |
+          set -x
+          echo "PW_PLATFORM_HOST=${PW_PLATFORM_HOST:-NOT_SET}"
+          echo "PW_USER=${PW_USER:-NOT_SET}"
           export PATH=$HOME/pw:$PATH
           cd ${PW_PARENT_JOB_DIR}
-          python3 run_tests.py \
-            --platform ${PW_PLATFORM_HOST} \
-            --user ${PW_USER}
+          python3 -u run_tests.py \
+            --platform "${PW_PLATFORM_HOST}" \
+            --user "${PW_USER}"
 
   serve:
     needs:
       - setup
+    sessions:
+      - session
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
@@ -46,7 +52,7 @@ jobs:
         run: |
           cd ${PW_PARENT_JOB_DIR}
           python3 serve.py \
-            --port ${{ sessions.session.port }} \
+            --port 8080 \
             --output-dir ${PW_PARENT_JOB_DIR}/output/${PW_PLATFORM_HOST} &
           echo $! > ${PW_PARENT_JOB_DIR}/service.pid
           sleep inf
