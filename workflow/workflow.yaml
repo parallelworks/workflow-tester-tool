@@ -29,7 +29,7 @@ jobs:
       - name: Restore outputs from bucket
         run: |
           rm -rf output
-          pw buckets cp -r ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }} output || true
+          pw buckets cp -r ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}/output . || true
 
   run_tests:
     if: ${{ inputs.run_tests }}
@@ -51,7 +51,7 @@ jobs:
             --user "${PW_USER}"
       - name: Transfer outputs to bucket
         run: |
-          pw buckets cp -r output ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}
+          pw buckets cp -r output ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}/output
 
   serve:
     if: ${{ inputs.serve_dashboard }}
@@ -111,10 +111,10 @@ jobs:
       bucket_path:
         type: string
         label: Path in Bucket
-        default: workflow-tester-tool/outputs
+        default: workflow-tester-tool
         tooltip: |
-          Path inside the bucket where test outputs are saved and retrieved.
-          Results are stored under this path as output/<platform>/<user>/...
+          Path inside the bucket where test outputs are stored and retrieved.
+          Results are saved as <path>/output/<platform>/<user>/...
       run_tests:
         type: boolean
         label: Run Tests
