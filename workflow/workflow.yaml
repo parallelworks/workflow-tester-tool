@@ -20,7 +20,7 @@ jobs:
         uses: parallelworks/checkout
         with:
           repo: https://github.com/parallelworks/workflow-tester-tool.git
-          branch: main
+          branch: add-activate-workflow
 
   run_tests:
     needs:
