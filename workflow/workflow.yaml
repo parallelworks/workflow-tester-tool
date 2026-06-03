@@ -8,6 +8,8 @@ env:
 sessions:
   dashboard:
     redirect: true
+  admin:
+    redirect: false
 jobs:
   setup:
     ssh:
@@ -18,11 +20,13 @@ jobs:
         with:
           repo: https://github.com/parallelworks/workflow-tester-tool.git
           branch: dev
-      - name: Get Session Port
+      - name: Get Session Ports
         if: ${{ inputs.serve_dashboard }}
         run: |
           SESSION_PORT=$(pw agent open-port)
           echo "SESSION_PORT=${SESSION_PORT}" | tee -a $OUTPUTS
+          ADMIN_PORT=$(pw agent open-port)
+          echo "ADMIN_PORT=${ADMIN_PORT}" | tee -a $OUTPUTS
       - name: Restore outputs from bucket
         run: |
           BUCKET_PATH="${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}"
@@ -70,6 +74,26 @@ jobs:
         cleanup: |
           pid=$(cat ${PW_PARENT_JOB_DIR}/service.pid 2>/dev/null)
           [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
+  serve_admin:
+    if: ${{ inputs.serve_dashboard }}
+    needs:
+      - setup
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Start Admin Dashboard
+        early-cancel: any-job-failed
+        run: |
+          export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.admin }}
+          python3 serve.py \
+            --port ${{ needs.setup.outputs.ADMIN_PORT }} \
+            --output-dir ${PW_PARENT_JOB_DIR}/output/${PW_PLATFORM_HOST} \
+            --admin &
+          echo $! > ${PW_PARENT_JOB_DIR}/admin.pid
+          sleep inf
+        cleanup: |
+          pid=$(cat ${PW_PARENT_JOB_DIR}/admin.pid 2>/dev/null)
+          [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
   create_session:
     if: ${{ inputs.serve_dashboard }}
     needs:
@@ -85,6 +109,21 @@ jobs:
           name: ${{ sessions.dashboard }}
           remoteHost: 0.0.0.0
           remotePort: ${{ needs.setup.outputs.SESSION_PORT }}
+  create_session_admin:
+    if: ${{ inputs.serve_dashboard }}
+    needs:
+      - setup
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Create AdminSession
+        early-cancel: any-job-failed
+        uses: parallelworks/update-session
+        with:
+          target: ${{ inputs.resource.id }}
+          name: ${{ sessions.admin }}
+          remoteHost: 0.0.0.0
+          remotePort: ${{ needs.setup.outputs.ADMIN_PORT }}
 'on':
   execute:
     inputs:
@@ -123,5 +162,5 @@ jobs:
         label: Serve Dashboard
         default: true
         tooltip: |
-          Yes → Start the test results dashboard as an interactive session.
+          Yes → Start the public and admin test-results dashboards as interactive sessions.
           No  → Run tests in batch mode only, with no web interface.

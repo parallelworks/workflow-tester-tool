@@ -3004,3 +3004,70 @@ tbody tr[data-test-id] {
   font-size: var(--text-sm);
   color: var(--muted);
 }
+
+/* ── Admin mode styles ───────────────────────────────────────────── */
+
+/* Top-of-page admin notice */
+.admin-banner {
+  background: rgba(212, 149, 47, 0.10);
+  border-bottom: 1px solid rgba(212, 149, 47, 0.30);
+  color: var(--alert);
+  text-align: center;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* "Admin" badge next to the page title */
+.admin-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.6rem;
+  border-radius: var(--radius-full);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  background: rgba(212, 149, 47, 0.14);
+  border: 1px solid rgba(212, 149, 47, 0.35);
+  color: var(--alert);
+  vertical-align: middle;
+  margin-left: var(--space-2);
+  letter-spacing: 0;
+}
+
+/* Admin action button row in detail panel */
+.admin-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  flex-wrap: wrap;
+}
+
+/* Danger (cancel) button variant */
+.ghost-btn.danger {
+  border-color: rgba(212, 78, 92, 0.40);
+  color: var(--danger);
+}
+
+.ghost-btn.danger:hover {
+  border-color: var(--danger);
+  background: rgba(212, 78, 92, 0.08);
+}
+
+.ghost-btn.danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ghost-btn.danger:disabled:hover {
+  border-color: rgba(212, 78, 92, 0.40);
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Success variant for status banner */
+.status-banner[data-variant="success"] {
+  border-color: rgba(52, 168, 92, 0.40);
+  background: rgba(52, 168, 92, 0.08);
+  color: var(--text);
+}

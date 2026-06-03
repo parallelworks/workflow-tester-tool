@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Workflow Test Dashboard — Admin</title>
+  <meta name="description" content="Admin dashboard for PW workflow and session tests — rerun or cancel tests.">
+  <script>
+    (function () {
+      function deriveBasePath(pathname) {
+        var path = pathname || "/";
+        if (path.indexOf("/admin.html") > -1) {
+          var lastSlash = path.lastIndexOf("/");
+          return (lastSlash >= 0 ? path.slice(0, lastSlash + 1) : "/");
+        }
+        return path.endsWith("/") ? path : path + "/";
+      }
+      var path = deriveBasePath(window.location.pathname || "/");
+      var base = document.createElement("base");
+      base.href = window.location.origin + path;
+      document.documentElement.setAttribute("data-base-path", path);
+      document.head.appendChild(base);
+    })();
+  </script>
+  <script>
+    window.IS_ADMIN = true;
+  </script>
+  <script>
+    (function () {
+      try {
+        var saved = window.localStorage.getItem("wf-test-theme");
+        document.documentElement.dataset.theme = saved || "dark";
+      } catch (e) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="assets/css/styles.css" />
+</head>
+
+<body>
+  <div class="admin-banner" role="note">
+    Admin Dashboard — actions here affect live workflow runs
+  </div>
+
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
+  <div class="page">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">PARALLEL WORKS</p>
+        <h1>Workflow Test Dashboard <span class="admin-badge">Admin</span></h1>
+        <p class="lede">Rerun or cancel tests directly from this admin view.</p>
+      </div>
+      <div class="hero-actions">
+        <button id="refresh-btn" class="ghost-btn" title="Reload results from disk">
+          <span class="btn-icon" aria-hidden="true">↻</span>
+          <span>Refresh</span>
+        </button>
+        <button id="theme-toggle" class="theme-btn" aria-label="Toggle color theme">
+          <span class="theme-icon" aria-hidden="true">🌙</span>
+          <span class="theme-label">Dark</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <div id="overview-content">
+
+        <!-- ── Summary cards ──────────────────────────────────── -->
+        <section class="cards" aria-label="Test summary">
+          <article class="card">
+            <p>Total tests</p>
+            <h2 id="total-tests" aria-live="polite">--</h2>
+          </article>
+          <article class="card">
+            <p>Pass rate</p>
+            <h2 id="pass-rate" aria-live="polite">--</h2>
+          </article>
+          <article class="card" id="failed-card">
+            <p>Failed</p>
+            <h2 id="failed-count" aria-live="polite">--</h2>
+          </article>
+          <article class="card">
+            <p>Last run</p>
+            <h2 id="last-run" aria-live="polite" style="font-size:var(--text-xl)">--</h2>
+          </article>
+        </section>
+
+        <!-- ── Breakdown panels ───────────────────────────────── -->
+        <section class="grid" aria-label="Test breakdown">
+          <div class="panel">
+            <h3>By status</h3>
+            <ul id="status-breakdown" class="legend" aria-label="Status counts"></ul>
+          </div>
+          <div class="panel">
+            <h3>By workflow</h3>
+            <ul id="workflow-breakdown" class="legend" aria-label="Workflow counts"></ul>
+          </div>
+          <div class="panel">
+            <h3>By kind</h3>
+            <ul id="kind-breakdown" class="legend" aria-label="Kind counts"></ul>
+          </div>
+        </section>
+
+        <!-- ── Filters ────────────────────────────────────────── -->
+        <section class="filters" aria-label="Filter options">
+          <label>
+            <span>Search</span>
+            <input type="search" id="search-input" placeholder="Test name or workflow"
+              aria-label="Search tests" />
+          </label>
+          <label>
+            <span>Status</span>
+            <select id="status-filter" aria-label="Filter by status">
+              <option value="">All</option>
+            </select>
+          </label>
+          <label>
+            <span>Workflow</span>
+            <select id="workflow-filter" aria-label="Filter by workflow">
+              <option value="">All</option>
+            </select>
+          </label>
+          <label>
+            <span>Kind</span>
+            <select id="kind-filter" aria-label="Filter by kind">
+              <option value="">All</option>
+              <option value="workflows">Workflows</option>
+              <option value="sessions">Sessions</option>
+            </select>
+          </label>
+        </section>
+
+        <!-- ── Tests table ────────────────────────────────────── -->
+        <section class="table-panel" aria-label="Test results">
+          <div class="table-head">
+            <h3>Test results</h3>
+            <p id="table-count" aria-live="polite">-- results</p>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Test name <span class="th-help" title="Name of the inputs.json file for this test">ⓘ</span></th>
+                  <th scope="col">Workflow <span class="th-help" title="PW workflow being tested">ⓘ</span></th>
+                  <th scope="col">Kind <span class="th-help" title="'workflows' run to completion; 'sessions' start and cancel when healthy">ⓘ</span></th>
+                  <th scope="col">Status <span class="th-help" title="completed=pass; error/timeout/launch_failed/poll_error=fail">ⓘ</span></th>
+                  <th scope="col">Date <span class="th-help" title="When the test was started (UTC)">ⓘ</span></th>
+                  <th scope="col">Duration <span class="th-help" title="Wall-clock time from launch to terminal status">ⓘ</span></th>
+                </tr>
+              </thead>
+              <tbody id="tests-body">
+                <tr>
+                  <td colspan="6" class="placeholder">Loading…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+      </div><!-- /#overview-content -->
+
+      <!-- ── Detail panel ───────────────────────────────────────── -->
+      <section class="detail-panel" id="test-detail" hidden aria-label="Test details">
+        <div class="detail-toolbar">
+          <button id="detail-back" class="ghost-btn detail-back" type="button">← Back to results</button>
+          <div class="detail-toolbar-meta">
+            <span id="detail-status" class="badge">--</span>
+            <span id="detail-duration" class="detail-observed">--</span>
+          </div>
+        </div>
+
+        <!-- Admin actions -->
+        <div id="admin-actions" class="admin-actions" hidden>
+          <button id="rerun-btn" class="ghost-btn" type="button">
+            <span class="btn-icon" aria-hidden="true">↺</span>
+            <span>Rerun Test</span>
+          </button>
+          <button id="cancel-btn" class="ghost-btn danger" type="button">
+            Cancel Run
+          </button>
+        </div>
+        <div id="admin-feedback" class="status-banner" hidden></div>
+
+        <div class="detail-summary-card">
+          <div>
+            <p class="eyebrow">Test detail</p>
+            <h2 id="detail-title">--</h2>
+            <p id="detail-workflow" class="detail-heading"></p>
+          </div>
+          <ul class="detail-meta-list">
+            <li>
+              <span>Kind</span>
+              <strong id="detail-kind">--</strong>
+            </li>
+            <li>
+              <span>Platform</span>
+              <strong id="detail-platform">--</strong>
+            </li>
+            <li>
+              <span>Run slug</span>
+              <strong id="detail-slug">--</strong>
+            </li>
+            <li>
+              <span>Date</span>
+              <strong id="detail-date">--</strong>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Error banner (shown only when there is an error) -->
+        <div id="detail-error-banner" class="status-banner" data-variant="error" hidden></div>
+
+        <!-- inputs.json viewer -->
+        <div class="panel" id="inputs-panel" style="margin-top:var(--space-6)">
+          <div class="table-head">
+            <h3>inputs.json</h3>
+            <span id="detail-inputs-status" class="muted-text"></span>
+          </div>
+          <pre id="detail-inputs" class="json-viewer"><code>Select a test to view its inputs.</code></pre>
+        </div>
+      </section>
+
+    </main>
+
+    <footer class="footer" role="contentinfo">
+      <small id="footer-generated">Data from ./output/</small>
+      <small>Workflow Test Dashboard — Admin</small>
+    </footer>
+  </div>
+
+  <script src="assets/js/page-utils.js?v=3" type="module"></script>
+  <script src="assets/js/app.js?v=3" type="module"></script>
+</body>
+
+</html>

@@ -13,13 +13,20 @@ Explicit prefix override (optional):
   --prefix /me/session/alvaro/test   (CLI)
   PW_BASE_PATH=/me/session/alvaro/test python serve.py  (env var)
 
+Admin mode:
+  python serve.py --admin
+  Enables POST /api/run-test and POST /api/cancel. Serves admin.html as root.
+
 Usage:
-  python serve.py [--host HOST] [--port PORT] [--output-dir DIR] [--prefix PREFIX]
+  python serve.py [--host HOST] [--port PORT] [--output-dir DIR] [--prefix PREFIX] [--admin]
 """
 
 import argparse
 import json
 import os
+import subprocess
+import sys
+import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,15 +34,18 @@ from urllib.parse import urlparse, unquote
 
 TESTS_DIR = Path(__file__).parent
 
-# API path segment (used for pattern-based routing)
+# API path segments
 _API_RESULTS = "/api/results"
 _API_RESULTS_SLASH = "/api/results/"
+_API_RUN_TEST = "/api/run-test"
+_API_CANCEL = "/api/cancel"
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     web_dir: Path = TESTS_DIR / "web"
     output_dir: Path = TESTS_DIR / "output"
-    url_prefix: str = ""   # optional prefix, e.g. "/me/session/alvaro/test"
+    url_prefix: str = ""
+    admin_mode: bool = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(self.web_dir), **kwargs)
@@ -44,17 +54,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        raw = parsed.path          # path as received (may include proxy prefix)
-        clean = self._strip(raw)   # path with prefix removed
+        raw = parsed.path
+        clean = self._strip(raw)
 
         # ── API: GET …/api/results ──────────────────────────────────────────
-        # Use endswith so the route fires whether or not the proxy stripped
-        # the prefix (raw may be /prefix/api/results or just /api/results).
         if clean == _API_RESULTS or raw.endswith(_API_RESULTS):
             return self._handle_results()
 
         # ── API: GET …/api/results/<test_path>/inputs ───────────────────────
-        # Use the path that contains /api/results/ (either clean or raw).
         for candidate in (clean, raw):
             if _API_RESULTS_SLASH in candidate and candidate.endswith("/inputs"):
                 idx = candidate.index(_API_RESULTS_SLASH)
@@ -64,11 +71,36 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self._handle_inputs(test_path)
 
         # ── Static files ─────────────────────────────────────────────────────
-        # Rewrite self.path to the prefix-stripped path so SimpleHTTPRequestHandler
-        # looks in the right place inside web/.
         qs = f"?{parsed.query}" if parsed.query else ""
-        self.path = clean + qs
+        if self.__class__.admin_mode and clean in ("/", "", "/index.html"):
+            self.path = "/admin.html" + qs
+        else:
+            self.path = clean + qs
         return super().do_GET()
+
+    def do_POST(self):
+        if not self.__class__.admin_mode:
+            self._json({"error": "Admin mode not enabled"}, status=403)
+            return
+
+        parsed = urlparse(self.path)
+        raw = parsed.path
+        clean = self._strip(raw)
+
+        if clean == _API_RUN_TEST or raw.endswith(_API_RUN_TEST):
+            return self._handle_run_test()
+        elif clean == _API_CANCEL or raw.endswith(_API_CANCEL):
+            return self._handle_cancel()
+        else:
+            self._json({"error": "Not found"}, status=404)
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     # ── Prefix detection ──────────────────────────────────────────────────────
 
@@ -96,6 +128,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
         super().end_headers()
+
+    # ── Body reader ───────────────────────────────────────────────────────────
+
+    def _read_json_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        if not length:
+            return {}
+        return json.loads(self.rfile.read(length))
 
     # ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -163,6 +203,58 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=500)
 
+    def _handle_run_test(self):
+        try:
+            data = self._read_json_body()
+            test = (data.get("test") or "").strip()
+            if not test:
+                self._json({"error": "Missing 'test' field"}, status=400)
+                return
+
+            test_file = TESTS_DIR / (test + ".json")
+            if not test_file.exists():
+                self._json({"error": f"Test file not found: {test}.json"}, status=404)
+                return
+
+            def _run():
+                subprocess.run(
+                    [sys.executable, "-u", str(TESTS_DIR / "run_tests.py"),
+                     "--test-file", str(test_file)],
+                    cwd=str(TESTS_DIR),
+                )
+
+            threading.Thread(target=_run, daemon=True).start()
+            self._json({"status": "launched", "test": test})
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=500)
+
+    def _handle_cancel(self):
+        try:
+            data = self._read_json_body()
+            slug = (data.get("slug") or "").strip()
+            platform = (data.get("platform") or "").strip()
+            if not slug:
+                self._json({"error": "Missing 'slug' field"}, status=400)
+                return
+            if not platform:
+                self._json({"error": "Missing 'platform' field"}, status=400)
+                return
+
+            proc = subprocess.run(
+                ["pw", "--platform-host", platform,
+                 "workflows", "runs", "cancel", slug],
+                capture_output=True, text=True, timeout=30,
+            )
+            if proc.returncode == 0:
+                self._json({"status": "canceled", "slug": slug})
+            else:
+                err = proc.stderr.strip() or proc.stdout.strip()
+                self._json({"error": err or "Cancel failed"}, status=500)
+        except subprocess.TimeoutExpired:
+            self._json({"error": "Cancel command timed out"}, status=504)
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=500)
+
     def _json(self, data: dict, status: int = 200) -> None:
         body = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status)
@@ -188,6 +280,10 @@ Prefix auto-detection (pick one, or omit for localhost):
   python serve.py --prefix /me/session/alvaro/test
   PW_BASE_PATH=/me/session/alvaro/test python serve.py
 The server also honours the X-Forwarded-Prefix header set by some proxies.
+
+Admin mode:
+  python serve.py --admin
+  Enables POST /api/run-test and POST /api/cancel. Serves admin.html as root.
 """,
     )
     ap.add_argument("--host",       default="0.0.0.0")
@@ -199,17 +295,24 @@ The server also honours the X-Forwarded-Prefix header set by some proxies.
         help="URL prefix to strip (e.g. /me/session/alvaro/test). "
              "Also read from PW_BASE_PATH env var.",
     )
+    ap.add_argument(
+        "--admin",
+        action="store_true",
+        help="Enable admin API (run-test, cancel) and serve admin.html as root.",
+    )
     args = ap.parse_args()
 
     DashboardHandler.output_dir = Path(args.output_dir).resolve()
     DashboardHandler.url_prefix = args.prefix.rstrip("/")
+    DashboardHandler.admin_mode = args.admin
 
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
-    prefix_note = f"  Prefix:           {args.prefix}" if args.prefix else ""
+    mode = "ADMIN" if args.admin else "public (read-only)"
     print(f"Workflow Test Dashboard: http://localhost:{args.port}/")
     print(f"  Output directory: {DashboardHandler.output_dir}")
-    if prefix_note:
-        print(prefix_note)
+    print(f"  Mode:             {mode}")
+    if args.prefix:
+        print(f"  Prefix:           {args.prefix}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
