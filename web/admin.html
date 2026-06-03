@@ -56,6 +56,10 @@
         <p class="lede">Rerun or cancel tests directly from this admin view.</p>
       </div>
       <div class="hero-actions">
+        <button id="rerun-all-btn" class="ghost-btn" title="Rerun all tests for this platform and user">
+          <span class="btn-icon" aria-hidden="true">▶</span>
+          <span>Rerun All</span>
+        </button>
         <button id="refresh-btn" class="ghost-btn" title="Reload results from disk">
           <span class="btn-icon" aria-hidden="true">↻</span>
           <span>Refresh</span>
@@ -69,6 +73,7 @@
 
     <main id="main-content">
       <div id="overview-content">
+        <div id="admin-global-feedback" class="status-banner" hidden></div>
 
         <!-- ── Summary cards ──────────────────────────────────── -->
         <section class="cards" aria-label="Test summary">
