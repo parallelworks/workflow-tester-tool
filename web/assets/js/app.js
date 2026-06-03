@@ -396,13 +396,43 @@ async function handleCancelRow(btn) {
 }
 
 function showAdminFeedback(msg, variant = "info") {
-  const banner = document.getElementById("admin-feedback");
+  const detailOpen = el.detailPanel && !el.detailPanel.hasAttribute("hidden");
+  const bannerId = detailOpen ? "admin-feedback" : "admin-global-feedback";
+  const banner = document.getElementById(bannerId);
   if (!banner) return;
   banner.dataset.variant = variant;
   banner.textContent = msg;
   banner.removeAttribute("hidden");
   clearTimeout(banner._timer);
   banner._timer = setTimeout(() => banner.setAttribute("hidden", "hidden"), 6000);
+}
+
+async function handleRerunAll() {
+  const btn = document.getElementById("rerun-all-btn");
+  if (!btn) return;
+  const origInner = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="btn-icon">▶</span><span>Launching…</span>';
+  try {
+    const resp = await fetch(new URL("api/run-all", API_BASE).toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      showAdminFeedback(
+        `All tests launched${data.platform ? ` for ${escapeHtml(data.platform)}` : ""}. Results will update as they complete.`,
+        "success"
+      );
+    } else {
+      showAdminFeedback(`Error: ${escapeHtml(data.error || "Unknown error")}`, "error");
+    }
+  } catch (err) {
+    showAdminFeedback(`Network error: ${escapeHtml(err.message)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origInner;
+  }
 }
 
 async function handleRerun() {
@@ -474,6 +504,8 @@ async function handleCancel() {
 }
 
 function registerAdminEvents() {
+  const rerunAllBtn = document.getElementById("rerun-all-btn");
+  if (rerunAllBtn) rerunAllBtn.addEventListener("click", handleRerunAll);
   const rerunBtn = document.getElementById("rerun-btn");
   if (rerunBtn) rerunBtn.addEventListener("click", handleRerun);
   const cancelBtn = document.getElementById("cancel-btn");

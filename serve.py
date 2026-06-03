@@ -15,7 +15,8 @@ Explicit prefix override (optional):
 
 Admin mode:
   python serve.py --admin
-  Enables POST /api/run-test and POST /api/cancel. Serves admin.html as root.
+  Enables POST /api/run-test, POST /api/run-all, and POST /api/cancel.
+  Serves admin.html as root.
 
 Usage:
   python serve.py [--host HOST] [--port PORT] [--output-dir DIR] [--prefix PREFIX] [--admin]
@@ -38,7 +39,8 @@ TESTS_DIR = Path(__file__).parent
 _API_RESULTS = "/api/results"
 _API_RESULTS_SLASH = "/api/results/"
 _API_RUN_TEST = "/api/run-test"
-_API_CANCEL = "/api/cancel"
+_API_RUN_ALL  = "/api/run-all"
+_API_CANCEL   = "/api/cancel"
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -89,6 +91,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         if clean == _API_RUN_TEST or raw.endswith(_API_RUN_TEST):
             return self._handle_run_test()
+        elif clean == _API_RUN_ALL or raw.endswith(_API_RUN_ALL):
+            return self._handle_run_all()
         elif clean == _API_CANCEL or raw.endswith(_API_CANCEL):
             return self._handle_cancel()
         else:
@@ -230,6 +234,24 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             self._json({"error": str(exc)}, status=500)
 
+    def _handle_run_all(self):
+        try:
+            cmd = [sys.executable, "-u", str(TESTS_DIR / "run_tests.py")]
+            platform = os.environ.get("PW_PLATFORM_HOST", "").strip()
+            user = os.environ.get("PW_USER", "").strip()
+            if platform:
+                cmd += ["--platform", platform]
+            if user:
+                cmd += ["--user", user]
+
+            threading.Thread(
+                target=lambda: subprocess.run(cmd, cwd=str(TESTS_DIR)),
+                daemon=True,
+            ).start()
+            self._json({"status": "launched", "platform": platform, "user": user})
+        except Exception as exc:
+            self._json({"error": str(exc)}, status=500)
+
     def _handle_cancel(self):
         try:
             data = self._read_json_body()
@@ -285,7 +307,8 @@ The server also honours the X-Forwarded-Prefix header set by some proxies.
 
 Admin mode:
   python serve.py --admin
-  Enables POST /api/run-test and POST /api/cancel. Serves admin.html as root.
+  Enables POST /api/run-test, POST /api/run-all, and POST /api/cancel.
+  Serves admin.html as root.
 """,
     )
     ap.add_argument("--host",       default="0.0.0.0")
