@@ -1,0 +1,21 @@
+{
+  "cluster": {
+    "scheduler": false
+  },
+  "container_runtime": "kasmvnc-singularity",
+  "desktop": {
+    "kasmvnc_os": "rocky9"
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3cdd5cbf8e314870d527",
+    "ip": "blueback.navydsrc.hpc.mil",
+    "name": "blueback",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/blueback",
+    "user": "avidalto"
+  }
+}

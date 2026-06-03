@@ -1,0 +1,31 @@
+{
+  "cluster": {
+    "scheduler": true,
+    "slurm": {
+      "account": "hpcmo49636prw",
+      "partition": "debug",
+      "qos": "normal",
+      "cpus_per_task": 1,
+      "nodes": 1,
+      "gpus": 0,
+      "time": "00:30:00"
+    }
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3ced5cbf8e314870d530",
+    "ip": "jean.arl.hpc.mil",
+    "name": "jean",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/jean",
+    "user": "avidalto"
+  },
+  "service": {
+    "container_runtime": "n8n-singularity",
+    "n8n_data_dir": "",
+    "n8n_image_tag": ""
+  }
+}

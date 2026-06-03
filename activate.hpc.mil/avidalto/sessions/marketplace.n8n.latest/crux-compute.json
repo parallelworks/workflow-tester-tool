@@ -1,0 +1,31 @@
+{
+  "cluster": {
+    "scheduler": true,
+    "slurm": {
+      "account": "hpcmo49636prw",
+      "partition": "generalPool",
+      "qos": "normal",
+      "cpus_per_task": 1,
+      "nodes": 1,
+      "gpus": 0,
+      "time": "00:30:00"
+    }
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d57a083ef51f3a8b15236",
+    "ip": "crux.mhpcc.hpc.mil",
+    "name": "crux",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/crux",
+    "user": "avidalto"
+  },
+  "service": {
+    "container_runtime": "n8n-singularity",
+    "n8n_data_dir": "",
+    "n8n_image_tag": ""
+  }
+}

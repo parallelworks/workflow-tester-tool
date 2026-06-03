@@ -1,0 +1,26 @@
+{
+  "cluster": {
+    "scheduler": true,
+    "slurm": {
+      "account": "hpcmo49636prw",
+      "partition": "general",
+      "qos": "debug"
+    }
+  },
+  "container_runtime": "kasmvnc-singularity",
+  "desktop": {
+    "kasmvnc_os": "rocky9"
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3d035cbf8e314870d541",
+    "ip": "nautilus.navydsrc.hpc.mil",
+    "name": "nautilus",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/nautilus",
+    "user": "avidalto"
+  }
+}

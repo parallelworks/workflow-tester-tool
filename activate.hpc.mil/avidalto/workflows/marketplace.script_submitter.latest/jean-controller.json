@@ -1,0 +1,20 @@
+{
+  "define_cleanup_script": false,
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3ced5cbf8e314870d530",
+    "ip": "jean.arl.hpc.mil",
+    "name": "jean",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/jean",
+    "user": "avidalto"
+  },
+  "rundir": "",
+  "scheduler": false,
+  "script": "echo \"$(date) Running in directory ${PWD} on ${HOSTNAME}\"",
+  "shebang": "",
+  "use_existing_script": false
+}
