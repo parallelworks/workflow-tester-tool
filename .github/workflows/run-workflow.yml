@@ -1,0 +1,86 @@
+name: Run PW Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'PW platform host'
+        required: true
+        type: choice
+        options:
+          - activate.parallel.works
+          - activate.hpc.mil
+      workflow_name:
+        description: 'Workflow name (slug) or path to a local YAML file'
+        required: true
+        default: 'workflowstatusmonitor'
+        type: string
+      resource:
+        description: 'Resource URI (e.g. pw://alvaro/user-workspace)'
+        required: true
+        default: 'pw://alvaro/user-workspace'
+        type: string
+      bucket:
+        description: 'Bucket URI (e.g. pw://alvaro/gcpbucket)'
+        required: true
+        default: 'pw://alvaro/gcpbucket'
+        type: string
+      bucket_path:
+        description: 'Output path inside the bucket (leave empty for default)'
+        required: false
+        default: ''
+        type: string
+      run_tests:
+        description: 'Run workflow tests'
+        required: false
+        default: true
+        type: boolean
+      serve_dashboard:
+        description: 'Start the results dashboard session'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  run-workflow:
+    runs-on: ubuntu-latest
+    env:
+      PW_PLATFORM_HOST: ${{ inputs.platform }}
+    steps:
+      - name: Install pw CLI
+        run: |
+          case "$(uname -m)" in
+            x86_64)  arch=amd64 ;;
+            aarch64) arch=arm64 ;;
+            *) echo "::error::Unsupported architecture: $(uname -m)"; exit 1 ;;
+          esac
+          mkdir -p ~/bin
+          wget -q "https://activate.parallel.works/cli/pw-linux-${arch}" -O ~/bin/pw
+          chmod +x ~/bin/pw
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate pw CLI
+        env:
+          PW_API_KEY: ${{ inputs.platform == 'activate.parallel.works' && secrets.ACTIVATE_PARALLEL_WORKS || secrets.ACTIVATE_HPC_MIL }}
+        run: pw auth apikey "$PW_API_KEY"
+
+      - name: Create inputs.json
+        run: |
+          cat > inputs.json << 'EOF'
+          {
+            "resource": "${{ inputs.resource }}",
+            "bucket": "${{ inputs.bucket }}",
+            "bucket_path": "${{ inputs.bucket_path }}",
+            "run_tests": ${{ inputs.run_tests }},
+            "serve_dashboard": ${{ inputs.serve_dashboard }}
+          }
+          EOF
+          echo "Workflow inputs:"
+          cat inputs.json
+
+      - name: Run workflow
+        run: |
+          pw workflows run \
+            --name "ci: ${{ github.workflow }} #${{ github.run_number }}" \
+            -i inputs.json \
+            "${{ inputs.workflow_name }}"
