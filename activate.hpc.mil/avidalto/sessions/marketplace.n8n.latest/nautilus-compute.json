@@ -1,0 +1,31 @@
+{
+  "cluster": {
+    "scheduler": true,
+    "slurm": {
+      "account": "hpcmo49636prw",
+      "partition": "general",
+      "qos": "debug",
+      "cpus_per_task": 1,
+      "nodes": 1,
+      "gpus": 0,
+      "time": "00:30:00"
+    }
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3d035cbf8e314870d541",
+    "ip": "nautilus.navydsrc.hpc.mil",
+    "name": "nautilus",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/nautilus",
+    "user": "avidalto"
+  },
+  "service": {
+    "container_runtime": "n8n-singularity",
+    "n8n_data_dir": "",
+    "n8n_image_tag": ""
+  }
+}

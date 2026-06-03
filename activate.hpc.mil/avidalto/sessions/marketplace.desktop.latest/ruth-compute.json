@@ -1,0 +1,25 @@
+{
+  "cluster": {
+    "pbs": {
+      "account": "HPCMO49636PRW",
+      "scheduler_directives": "#PBS -l walltime=00:30:00\n#PBS -V\n#PBS -q standard\n#PBS -l select=1:ncpus=128:mpiprocs=128"
+    },
+    "scheduler": true
+  },
+  "container_runtime": "kasmvnc-singularity",
+  "desktop": {
+    "kasmvnc_os": "rocky9"
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3ffa83ef51f3a8b144af",
+    "ip": "ruth.arl.hpc.mil",
+    "name": "ruth",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "pbs",
+    "type": "existing",
+    "uri": "pw://avidalto/ruth",
+    "user": "avidalto"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "define_cleanup_script": false,
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d576b83ef51f3a8b151f6",
+    "ip": "makau.mhpcc.hpc.mil",
+    "name": "makau",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/makau",
+    "user": "avidalto"
+  },
+  "rundir": "",
+  "scheduler": true,
+  "script": "echo \"$(date) Running in directory ${PWD} on ${HOSTNAME}\"",
+  "shebang": "",
+  "use_existing_script": false,
+  "slurm": {
+    "is_enabled": true,
+    "account": "hpcmo49636prw",
+    "partition": "standard",
+    "qos": "debug",
+    "cpus_per_task": 1,
+    "nodes": 1,
+    "gpus": 0,
+    "time": "00:30:00"
+  }
+}
