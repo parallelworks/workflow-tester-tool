@@ -1,0 +1,27 @@
+{
+  "cluster": {
+    "scheduler": true,
+    "slurm": {
+      "account": "hpcmo49636prw",
+      "gpus": 1,
+      "partition": "standard",
+      "qos": "debug"
+    }
+  },
+  "container_runtime": "kasmvnc-singularity",
+  "desktop": {
+    "kasmvnc_os": "rocky9"
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d576b83ef51f3a8b151f6",
+    "ip": "makau.mhpcc.hpc.mil",
+    "name": "makau",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/makau",
+    "user": "avidalto"
+  }
+}

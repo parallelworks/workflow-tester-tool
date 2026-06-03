@@ -1,0 +1,21 @@
+{
+  "cluster": {
+    "scheduler": false
+  },
+  "container_runtime": "kasmvnc-singularity",
+  "desktop": {
+    "kasmvnc_os": "rocky9"
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d400183ef51f3a8b144b7",
+    "ip": "warhawk.afrl.hpc.mil",
+    "name": "warhawk",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "pbs",
+    "type": "existing",
+    "uri": "pw://avidalto/warhawk",
+    "user": "avidalto"
+  }
+}
