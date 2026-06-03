@@ -1,0 +1,26 @@
+{
+  "cluster": {
+    "scheduler": true,
+    "pbs": {
+      "account": "HPCMO49636PRW",
+      "scheduler_directives": "# Parameters that apply to all sites\n#PBS -l walltime=00:30:00\n#PBS -V\n#PBS -q standard\n#PBS -l select=1:ncpus=192:mpiprocs=192"
+    }
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3ce45cbf8e314870d52b",
+    "ip": "carpenter.erdc.hpc.mil",
+    "name": "carpenter",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "pbs",
+    "type": "existing",
+    "uri": "pw://avidalto/carpenter",
+    "user": "avidalto"
+  },
+  "service": {
+    "container_runtime": "n8n-singularity",
+    "n8n_data_dir": "",
+    "n8n_image_tag": ""
+  }
+}
