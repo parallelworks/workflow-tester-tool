@@ -276,6 +276,21 @@ function showDetail(testId) {
     }
   }
 
+  // Admin mode: show actions and update Cancel button state
+  if (window.IS_ADMIN) {
+    const adminActions = document.getElementById("admin-actions");
+    if (adminActions) adminActions.removeAttribute("hidden");
+    const cancelBtn = document.getElementById("cancel-btn");
+    if (cancelBtn) {
+      cancelBtn.disabled = !result.slug;
+      cancelBtn.title = result.slug
+        ? `Cancel PW run ${result.slug}`
+        : "No run slug available to cancel";
+    }
+    const fb = document.getElementById("admin-feedback");
+    if (fb) fb.setAttribute("hidden", "hidden");
+  }
+
   el.overview.setAttribute("hidden", "hidden");
   el.detailPanel.removeAttribute("hidden");
 
@@ -286,6 +301,10 @@ function closeDetail() {
   state.activeTest = null;
   el.detailPanel.setAttribute("hidden", "hidden");
   el.overview.removeAttribute("hidden");
+  if (window.IS_ADMIN) {
+    const adminActions = document.getElementById("admin-actions");
+    if (adminActions) adminActions.setAttribute("hidden", "hidden");
+  }
 }
 
 // ── Events ────────────────────────────────────────────────────────────────────
@@ -325,9 +344,97 @@ function registerEvents() {
   });
 }
 
+// ── Admin actions (admin.html only) ──────────────────────────────────────────
+
+function showAdminFeedback(msg, variant = "info") {
+  const banner = document.getElementById("admin-feedback");
+  if (!banner) return;
+  banner.dataset.variant = variant;
+  banner.textContent = msg;
+  banner.removeAttribute("hidden");
+  clearTimeout(banner._timer);
+  banner._timer = setTimeout(() => banner.setAttribute("hidden", "hidden"), 6000);
+}
+
+async function handleRerun() {
+  if (!state.activeTest) return;
+  const result = state.results.find(r => r.test === state.activeTest);
+  if (!result) return;
+
+  const btn = document.getElementById("rerun-btn");
+  if (!btn) return;
+  const origInner = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="btn-icon">↻</span><span>Launching…</span>';
+  btn.classList.add("is-loading");
+
+  try {
+    const resp = await fetch(new URL("api/run-test", API_BASE).toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ test: result.test }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      showAdminFeedback("Test rerun launched. Results will update automatically.", "success");
+    } else {
+      showAdminFeedback(`Error: ${escapeHtml(data.error || "Unknown error")}`, "error");
+    }
+  } catch (err) {
+    showAdminFeedback(`Network error: ${escapeHtml(err.message)}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origInner;
+    btn.classList.remove("is-loading");
+  }
+}
+
+async function handleCancel() {
+  if (!state.activeTest) return;
+  const result = state.results.find(r => r.test === state.activeTest);
+  if (!result?.slug) {
+    showAdminFeedback("No run slug available to cancel.", "error");
+    return;
+  }
+
+  const btn = document.getElementById("cancel-btn");
+  if (!btn) return;
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Canceling…";
+
+  try {
+    const resp = await fetch(new URL("api/cancel", API_BASE).toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: result.slug, platform: result.platform }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      showAdminFeedback(`Run ${escapeHtml(result.slug)} has been canceled.`, "success");
+      setTimeout(() => loadData({ showLoading: false }), 3000);
+    } else {
+      showAdminFeedback(`Error: ${escapeHtml(data.error || "Cancel failed")}`, "error");
+    }
+  } catch (err) {
+    showAdminFeedback(`Network error: ${escapeHtml(err.message)}`, "error");
+  } finally {
+    btn.disabled = !result.slug;
+    btn.textContent = origText;
+  }
+}
+
+function registerAdminEvents() {
+  const rerunBtn = document.getElementById("rerun-btn");
+  if (rerunBtn) rerunBtn.addEventListener("click", handleRerun);
+  const cancelBtn = document.getElementById("cancel-btn");
+  if (cancelBtn) cancelBtn.addEventListener("click", handleCancel);
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 initThemeToggle();
 registerEvents();
+if (window.IS_ADMIN) registerAdminEvents();
 loadData();
 // Auto-refresh every 3 minutes
 setInterval(() => loadData({ showLoading: false }), 3 * 60 * 1000);
