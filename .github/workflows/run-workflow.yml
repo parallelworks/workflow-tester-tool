@@ -3,10 +3,17 @@ name: Run PW Workflow
 on:
   workflow_dispatch:
     inputs:
-      workflow_name:
-        description: 'Workflow name or path to a local YAML file'
+      platform:
+        description: 'PW platform host'
         required: true
-        default: './workflow/workflow.yaml'
+        type: choice
+        options:
+          - activate.parallel.works
+          - activate.hpc.mil
+      workflow_name:
+        description: 'Workflow name (slug) or path to a local YAML file'
+        required: true
+        default: 'workflowstatusmonitor'
         type: string
       resource:
         description: 'Resource URI (e.g. pw://alvaro/user-workspace)'
@@ -34,16 +41,12 @@ on:
         default: true
         type: boolean
 
-env:
-  PW_PLATFORM_HOST: activate.parallel.works
-
 jobs:
   run-workflow:
     runs-on: ubuntu-latest
+    env:
+      PW_PLATFORM_HOST: ${{ inputs.platform }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Install pw CLI
         run: |
           case "$(uname -m)" in
@@ -57,7 +60,9 @@ jobs:
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Authenticate pw CLI
-        run: pw auth apikey "${{ secrets.PW_API_KEY }}"
+        env:
+          PW_API_KEY: ${{ inputs.platform == 'activate.parallel.works' && secrets.ACTIVATE_PARALLEL_WORKS || secrets.ACTIVATE_HPC_MIL }}
+        run: pw auth apikey "$PW_API_KEY"
 
       - name: Create inputs.json
         run: |
