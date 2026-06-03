@@ -142,6 +142,7 @@ async function loadData({ showLoading = true } = {}) {
     el.tableCount.textContent = "Error";
   } finally {
     state.loading = false;
+    scheduleRefresh();
   }
 }
 
@@ -166,20 +167,26 @@ async function loadInputs(testPath) {
 
 // ── Summary & breakdowns ──────────────────────────────────────────────────────
 function updateSummary() {
-  const { total, passed, failed, pass_rate, last_run, status_counts, workflow_counts, kind_counts } = state.summary;
+  const { total, passed, running, failed, pass_rate, last_run, status_counts, workflow_counts, kind_counts } = state.summary;
 
   if (el.totalTests)  el.totalTests.textContent  = total  ?? "--";
   if (el.passRate)    el.passRate.textContent     = total  ? `${pass_rate}%` : "--";
-  if (el.failedCount) el.failedCount.textContent  = failed ?? "--";
+  if (el.lastRun) {
+    el.lastRun.textContent = last_run ? formatRelativeTime(last_run) : "--";
+    if (last_run) el.lastRun.title = new Date(last_run).toLocaleString();
+  }
 
-  // Highlight failed card in danger when there are failures
+  if (el.failedCount) {
+    el.failedCount.textContent = failed ?? "--";
+  }
   if (el.failedCard) {
     el.failedCard.classList.toggle("alert", Number(failed) > 0);
   }
 
-  if (el.lastRun) {
-    el.lastRun.textContent = last_run ? formatRelativeTime(last_run) : "--";
-    if (last_run) el.lastRun.title = new Date(last_run).toLocaleString();
+  // Show running count alongside the failed card label
+  const failedLabel = el.failedCard?.querySelector("p");
+  if (failedLabel) {
+    failedLabel.textContent = Number(running) > 0 ? `Failed  (${running} running)` : "Failed";
   }
 
   buildLegend(el.statusBreakdown, status_counts);
@@ -431,10 +438,21 @@ function registerAdminEvents() {
   if (cancelBtn) cancelBtn.addEventListener("click", handleCancel);
 }
 
+// ── Auto-refresh ──────────────────────────────────────────────────────────────
+// Poll every 10 s while any test is running; fall back to 3 min when idle.
+let _refreshTimer = null;
+
+function scheduleRefresh() {
+  clearTimeout(_refreshTimer);
+  const hasRunning = state.results.some(r => r.status === "running");
+  _refreshTimer = setTimeout(
+    () => loadData({ showLoading: false }),
+    hasRunning ? 10_000 : 3 * 60 * 1000
+  );
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 initThemeToggle();
 registerEvents();
 if (window.IS_ADMIN) registerAdminEvents();
 loadData();
-// Auto-refresh every 3 minutes
-setInterval(() => loadData({ showLoading: false }), 3 * 60 * 1000);

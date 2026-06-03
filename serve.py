@@ -165,9 +165,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         results.sort(key=lambda r: r.get("started_at") or "", reverse=True)
 
-        total  = len(results)
-        passed = sum(1 for r in results if r["status"] == "completed")
-        failed = total - passed
+        total   = len(results)
+        passed  = sum(1 for r in results if r["status"] == "completed")
+        running = sum(1 for r in results if r["status"] == "running")
+        failed  = total - passed - running
 
         status_counts:   dict = {}
         workflow_counts: dict = {}
@@ -182,6 +183,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "summary": {
                 "total":           total,
                 "passed":          passed,
+                "running":         running,
                 "failed":          failed,
                 "pass_rate":       round(passed / total * 100, 1) if total else 0,
                 "last_run":        results[0]["started_at"] if results else None,
