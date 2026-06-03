@@ -142,6 +142,7 @@ async function loadData({ showLoading = true } = {}) {
     el.tableCount.textContent = "Error";
   } finally {
     state.loading = false;
+    scheduleRefresh();
   }
 }
 
@@ -166,20 +167,26 @@ async function loadInputs(testPath) {
 
 // ── Summary & breakdowns ──────────────────────────────────────────────────────
 function updateSummary() {
-  const { total, passed, failed, pass_rate, last_run, status_counts, workflow_counts, kind_counts } = state.summary;
+  const { total, passed, running, failed, pass_rate, last_run, status_counts, workflow_counts, kind_counts } = state.summary;
 
   if (el.totalTests)  el.totalTests.textContent  = total  ?? "--";
   if (el.passRate)    el.passRate.textContent     = total  ? `${pass_rate}%` : "--";
-  if (el.failedCount) el.failedCount.textContent  = failed ?? "--";
+  if (el.lastRun) {
+    el.lastRun.textContent = last_run ? formatRelativeTime(last_run) : "--";
+    if (last_run) el.lastRun.title = new Date(last_run).toLocaleString();
+  }
 
-  // Highlight failed card in danger when there are failures
+  if (el.failedCount) {
+    el.failedCount.textContent = failed ?? "--";
+  }
   if (el.failedCard) {
     el.failedCard.classList.toggle("alert", Number(failed) > 0);
   }
 
-  if (el.lastRun) {
-    el.lastRun.textContent = last_run ? formatRelativeTime(last_run) : "--";
-    if (last_run) el.lastRun.title = new Date(last_run).toLocaleString();
+  // Show running count alongside the failed card label
+  const failedLabel = el.failedCard?.querySelector("p");
+  if (failedLabel) {
+    failedLabel.textContent = Number(running) > 0 ? `Failed  (${running} running)` : "Failed";
   }
 
   buildLegend(el.statusBreakdown, status_counts);
@@ -236,17 +243,26 @@ function renderTable() {
     return;
   }
 
-  el.tableBody.innerHTML = rows.map(r => `
-    <tr data-test-id="${escapeHtml(r.test)}" tabindex="0" role="button"
-        aria-label="View test ${escapeHtml(r.test_name)}">
-      <td><strong>${escapeHtml(r.test_name)}</strong></td>
-      <td><span class="system-meta">${escapeHtml(r.workflow)}</span></td>
-      <td>${kindChip(r.kind)}</td>
-      <td>${statusBadge(r.status)}</td>
-      <td>${formatDate(r.started_at)}</td>
-      <td>${formatDuration(r.duration_s)}</td>
-    </tr>
-  `).join("");
+  el.tableBody.innerHTML = rows.map(r => {
+    const canCancel = window.IS_ADMIN && r.status === "running" && r.slug;
+    const cancelBtn = canCancel
+      ? `<button class="cancel-row-btn ghost-btn btn-sm danger"
+             data-slug="${escapeHtml(r.slug)}"
+             data-platform="${escapeHtml(r.platform)}"
+             title="Cancel run ${escapeHtml(r.slug)}">✕ Cancel</button>`
+      : "";
+    return `
+      <tr data-test-id="${escapeHtml(r.test)}" tabindex="0" role="button"
+          aria-label="View test ${escapeHtml(r.test_name)}">
+        <td><strong>${escapeHtml(r.test_name)}</strong></td>
+        <td><span class="system-meta">${escapeHtml(r.workflow)}</span></td>
+        <td>${kindChip(r.kind)}</td>
+        <td class="status-cell">${statusBadge(r.status)}${cancelBtn}</td>
+        <td>${formatDate(r.started_at)}</td>
+        <td>${formatDuration(r.duration_s)}</td>
+      </tr>
+    `;
+  }).join("");
 }
 
 // ── Detail panel ──────────────────────────────────────────────────────────────
@@ -326,6 +342,12 @@ function registerEvents() {
   });
 
   el.tableBody.addEventListener("click", (e) => {
+    const cancelBtn = e.target.closest(".cancel-row-btn");
+    if (cancelBtn) {
+      e.stopPropagation();
+      handleCancelRow(cancelBtn);
+      return;
+    }
     const row = e.target.closest("tr[data-test-id]");
     if (row) showDetail(row.dataset.testId);
   });
@@ -345,6 +367,33 @@ function registerEvents() {
 }
 
 // ── Admin actions (admin.html only) ──────────────────────────────────────────
+
+async function handleCancelRow(btn) {
+  const { slug, platform } = btn.dataset;
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Canceling…";
+  try {
+    const resp = await fetch(new URL("api/cancel", API_BASE).toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug, platform }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      btn.textContent = "Canceled";
+      setTimeout(() => loadData({ showLoading: false }), 2000);
+    } else {
+      btn.disabled = false;
+      btn.textContent = origText;
+      showAdminFeedback(`Cancel failed: ${escapeHtml(data.error || "Unknown error")}`, "error");
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = origText;
+    showAdminFeedback(`Network error: ${escapeHtml(err.message)}`, "error");
+  }
+}
 
 function showAdminFeedback(msg, variant = "info") {
   const banner = document.getElementById("admin-feedback");
@@ -431,10 +480,21 @@ function registerAdminEvents() {
   if (cancelBtn) cancelBtn.addEventListener("click", handleCancel);
 }
 
+// ── Auto-refresh ──────────────────────────────────────────────────────────────
+// Poll every 10 s while any test is running; fall back to 3 min when idle.
+let _refreshTimer = null;
+
+function scheduleRefresh() {
+  clearTimeout(_refreshTimer);
+  const hasRunning = state.results.some(r => r.status === "running");
+  _refreshTimer = setTimeout(
+    () => loadData({ showLoading: false }),
+    hasRunning ? 10_000 : 3 * 60 * 1000
+  );
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 initThemeToggle();
 registerEvents();
 if (window.IS_ADMIN) registerAdminEvents();
 loadData();
-// Auto-refresh every 3 minutes
-setInterval(() => loadData({ showLoading: false }), 3 * 60 * 1000);

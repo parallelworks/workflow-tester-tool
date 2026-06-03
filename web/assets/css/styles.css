@@ -3005,6 +3005,16 @@ tbody tr[data-test-id] {
   color: var(--muted);
 }
 
+/* ── Running-test inline cancel button ───────────────────────────── */
+.status-cell {
+  white-space: nowrap;
+}
+
+.cancel-row-btn {
+  margin-left: var(--space-2);
+  vertical-align: middle;
+}
+
 /* ── Admin mode styles ───────────────────────────────────────────── */
 
 /* Top-of-page admin notice */

@@ -374,6 +374,7 @@ def _run_workflow_test(
 
     result.slug = slug
     result.status = "running"
+    _write_result(result, started_at)
 
     logger.section("POLLING")
     poll_cmd = [
@@ -467,6 +468,7 @@ def _run_session_test(
 
     result.slug = slug
     result.status = "running"
+    _write_result(result, started_at)
 
     # ── Poll until run is running ─────────────────────────────────────────────
     logger.section("WAITING FOR RUN TO START")
