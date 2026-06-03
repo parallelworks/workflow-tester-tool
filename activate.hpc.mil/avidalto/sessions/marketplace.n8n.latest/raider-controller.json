@@ -1,0 +1,22 @@
+{
+  "cluster": {
+    "scheduler": false
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3d0d5cbf8e314870d549",
+    "ip": "raider.afrl.hpc.mil",
+    "name": "raider",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/raider",
+    "user": "avidalto"
+  },
+  "service": {
+    "container_runtime": "n8n-singularity",
+    "n8n_data_dir": "",
+    "n8n_image_tag": ""
+  }
+}

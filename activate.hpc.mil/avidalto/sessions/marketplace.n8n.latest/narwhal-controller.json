@@ -1,0 +1,22 @@
+{
+  "cluster": {
+    "scheduler": false
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3cfb5cbf8e314870d53d",
+    "ip": "narwhal.navydsrc.hpc.mil",
+    "name": "narwhal",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "slurm",
+    "type": "existing",
+    "uri": "pw://avidalto/narwhal",
+    "user": "avidalto"
+  },
+  "service": {
+    "container_runtime": "n8n-singularity",
+    "n8n_data_dir": "",
+    "n8n_image_tag": ""
+  }
+}

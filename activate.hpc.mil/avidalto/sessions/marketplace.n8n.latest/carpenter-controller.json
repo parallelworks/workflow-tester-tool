@@ -1,0 +1,22 @@
+{
+  "cluster": {
+    "scheduler": false
+  },
+  "resource": {
+    "$type": "computeResource",
+    "id": "6a1d3ce45cbf8e314870d52b",
+    "ip": "carpenter.erdc.hpc.mil",
+    "name": "carpenter",
+    "namespace": "avidalto",
+    "provider": "existing",
+    "schedulerType": "pbs",
+    "type": "existing",
+    "uri": "pw://avidalto/carpenter",
+    "user": "avidalto"
+  },
+  "service": {
+    "container_runtime": "n8n-singularity",
+    "n8n_data_dir": "",
+    "n8n_image_tag": ""
+  }
+}
