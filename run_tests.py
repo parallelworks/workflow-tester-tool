@@ -184,8 +184,13 @@ def discover_tests(
     kind: Optional[str] = None,
     workflow: Optional[str] = None,
     test_file: Optional[str] = None,
+    output_base: Optional[Path] = None,
 ) -> list[TestCase]:
-    """Return test cases matching the given filters."""
+    """Return test cases matching the given filters.
+
+    Files under ``output_base`` are skipped so a results tree living inside the
+    repo can never be mistaken for test definitions.
+    """
     if test_file:
         p = Path(test_file)
         if not p.is_absolute():
@@ -225,8 +230,12 @@ def discover_tests(
     k_glob = kind or "*"
     w_glob = workflow or "*"
 
+    out_base = output_base.resolve() if output_base else None
+
     tests: list[TestCase] = []
     for f in sorted(TESTS_DIR.glob(f"{p_glob}/{u_glob}/{k_glob}/{w_glob}/*.json")):
+        if out_base is not None and out_base in f.resolve().parents:
+            continue
         parts = f.relative_to(TESTS_DIR).parts
         if len(parts) != 5:
             continue
@@ -719,6 +728,7 @@ def main() -> None:
             kind=args.kind,
             workflow=args.workflow,
             test_file=args.test_file,
+            output_base=output_base,
         )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)

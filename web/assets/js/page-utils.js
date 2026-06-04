@@ -1,14 +1,5 @@
 const THEME_STORAGE_KEY = "wf-test-theme";
 
-const deriveBasePath = (pathname = "/") => {
-  const path = pathname || "/";
-  if (path.endsWith("/")) return path;
-  const lastSlash = path.lastIndexOf("/");
-  const segment = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
-  const prefix = lastSlash >= 0 ? path.slice(0, lastSlash + 1) : "/";
-  return segment.includes(".") ? prefix || "/" : `${path}/`;
-};
-
 const safeGetStoredTheme = () => {
   try { return window.localStorage.getItem(THEME_STORAGE_KEY); }
   catch { return null; }
@@ -51,12 +42,6 @@ export const initThemeToggle = () => {
       applyTheme(next);
     });
   }
-};
-
-export const clampPercent = (value) => {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return 0;
-  return Math.min(100, Math.max(0, numeric));
 };
 
 export const formatRelativeTime = (timestamp) => {

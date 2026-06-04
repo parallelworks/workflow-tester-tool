@@ -31,9 +31,10 @@ import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse, unquote
 
-TESTS_DIR = Path(__file__).parent
+TESTS_DIR = Path(__file__).parent.resolve()
 
 # API path segments
 _API_RESULTS = "/api/results"
@@ -41,6 +42,18 @@ _API_RESULTS_SLASH = "/api/results/"
 _API_RUN_TEST = "/api/run-test"
 _API_RUN_ALL  = "/api/run-all"
 _API_CANCEL   = "/api/cancel"
+
+
+def _resolve_test_file(test_path: str) -> Optional[Path]:
+    """
+    Map a client-supplied test path to a ``<test>.json`` file, refusing any
+    path that escapes TESTS_DIR. Returns the resolved path or None if it is
+    outside the tree or does not exist.
+    """
+    candidate = (TESTS_DIR / (test_path + ".json")).resolve()
+    if not candidate.is_relative_to(TESTS_DIR) or not candidate.is_file():
+        return None
+    return candidate
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -97,14 +110,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_cancel()
         else:
             self._json({"error": "Not found"}, status=404)
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Content-Length", "0")
-        self.end_headers()
 
     # ── Prefix detection ──────────────────────────────────────────────────────
 
@@ -199,8 +204,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_inputs(self, test_path: str):
-        inputs_file = TESTS_DIR / (test_path + ".json")
-        if not inputs_file.exists():
+        inputs_file = _resolve_test_file(test_path)
+        if inputs_file is None:
             self._json({"error": f"Inputs file not found: {test_path}"}, status=404)
             return
         try:
@@ -217,8 +222,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._json({"error": "Missing 'test' field"}, status=400)
                 return
 
-            test_file = TESTS_DIR / (test + ".json")
-            if not test_file.exists():
+            test_file = _resolve_test_file(test)
+            if test_file is None:
                 self._json({"error": f"Test file not found: {test}.json"}, status=404)
                 return
 
@@ -285,7 +290,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 

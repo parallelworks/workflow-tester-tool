@@ -213,8 +213,10 @@ output/
 - In `--admin` mode:
   - Serves `admin.html` as the root page instead of `index.html`
   - `POST /api/run-test` — spawns `run_tests.py --test-file` in a background thread
+  - `POST /api/run-all` — spawns `run_tests.py` (scoped to `PW_PLATFORM_HOST` / `PW_USER`) in a background thread
   - `POST /api/cancel` — calls `pw workflows runs cancel <slug>` synchronously
-  - `OPTIONS` — CORS preflight response
+- Client-supplied test paths are resolved through `_resolve_test_file()`, which rejects any path that escapes the repo directory (no `../` traversal)
+- Responses are same-origin only — no CORS headers are sent
 - URL prefix detection: strips `PW_BASE_PATH` / `--prefix` / `X-Forwarded-Prefix` header so the server works at any reverse-proxy path
 
 ### Web frontend (`web/`)
@@ -226,18 +228,22 @@ output/
 
 ### `workflow/workflow.yaml`
 
-Six parallel jobs, all depending on `setup`:
+Four jobs. `setup` runs first; the rest depend on it:
 
 | Job | Purpose |
 |---|---|
 | `setup` | Checkout repo, allocate two ports, restore outputs from bucket |
-| `run_tests` | Run the full test suite, upload results to bucket |
-| `serve` | Start `serve.py` (public, read-only) on `SESSION_PORT` |
-| `serve_admin` | Start `serve.py --admin` on `ADMIN_PORT` |
-| `create_session` | Register the public dashboard as an ACTIVATE session |
-| `create_session_admin` | Register the admin dashboard as an ACTIVATE session |
+| `run_tests` | Run the full test suite, then upload results to the bucket (`if: always`, so failing runs are still published) |
+| `serve` | Start the public read-only dashboard on `SESSION_PORT`, wait until it answers, then register it as an ACTIVATE session |
+| `serve_admin` | Same lifecycle for `serve.py --admin` on `ADMIN_PORT` |
 
-`serve` and `serve_admin` run `sleep inf` so the sessions stay alive for the life of the workflow run. Both are cleaned up (process killed) when the workflow is canceled or the run ends.
+Each serve job starts the server, polls it until it responds, registers the
+session **only then** (so a dead port is never advertised), and stays alive
+while the server runs — exiting if the server dies. Job-level `cleanup` kills
+the server when the run is canceled or ends. `PW_API_KEY` is granted only to
+`setup`, `run_tests`, and `serve_admin`; the public dashboard process never
+receives it. Both servers log to `dashboard.log` / `admin.log` in the job
+directory.
 
 ---
 

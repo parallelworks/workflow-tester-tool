@@ -55,6 +55,7 @@ The workflow URL redirects automatically to the public dashboard. To reach the a
 | `canceled` | Run was canceled outside of the test framework |
 | `launch_failed` | The `pw workflows run` command itself failed |
 | `poll_error` | Could not reach the platform API after repeated retries |
+| `internal_error` | The test runner hit an unhandled exception |
 
 ---
 

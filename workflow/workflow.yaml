@@ -1,10 +1,12 @@
 # yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
 permissions:
   - '*'
+# PW_API_KEY is intentionally NOT global: it is granted per-job only to jobs
+# that call the `pw` CLI (setup, run_tests, serve_admin), so the public
+# read-only dashboard process never carries platform credentials.
 env:
   PW_PLATFORM_HOST: ${{ env.PW_PLATFORM_HOST }}
   PW_USER: ${{ env.PW_USER }}
-  PW_API_KEY: ${{ env.PW_API_KEY }}
 sessions:
   dashboard:
     redirect: true
@@ -12,6 +14,9 @@ sessions:
     redirect: false
 jobs:
   setup:
+    timeout: 15m
+    env:
+      PW_API_KEY: ${{ env.PW_API_KEY }}
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
@@ -36,13 +41,15 @@ jobs:
             || echo "::warning::No outputs found at ${BUCKET_PATH} — starting fresh"
   run_tests:
     if: ${{ inputs.run_tests }}
+    timeout: 2h
     needs:
       - setup
+    env:
+      PW_API_KEY: ${{ env.PW_API_KEY }}
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
       - name: Run Tests
-        early-cancel: any-job-failed
         run: |
           set -x
           echo "PW_PLATFORM_HOST=${PW_PLATFORM_HOST:-NOT_SET}"
@@ -53,8 +60,15 @@ jobs:
             --platform "${PW_PLATFORM_HOST}" \
             --user "${PW_USER}"
       - name: Transfer outputs to bucket
+        # Always upload — failing-test results are exactly what the dashboard
+        # exists to show, so they must reach the bucket even when Run Tests fails.
+        if: ${{ always }}
         run: |
           pw buckets cp -r output ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}
+  # Public dashboard: start the server, wait until it answers, register the
+  # session only then, and hold the job open for as long as the server lives.
+  # Starting + advertising in one job removes the race where the session is
+  # published before (or after) the server is actually serving.
   serve:
     if: ${{ inputs.serve_dashboard }}
     needs:
@@ -62,68 +76,79 @@ jobs:
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
-      - name: Start Dashboard
-        early-cancel: any-job-failed
+      - name: Start dashboard server
         run: |
           export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.dashboard }}
-          python3 serve.py \
+          nohup python3 serve.py \
             --port ${{ needs.setup.outputs.SESSION_PORT }} \
-            --output-dir ${PW_PARENT_JOB_DIR}/output/${PW_PLATFORM_HOST} &
-          echo $! > ${PW_PARENT_JOB_DIR}/service.pid
-          sleep inf
-        cleanup: |
-          pid=$(cat ${PW_PARENT_JOB_DIR}/service.pid 2>/dev/null)
-          [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
-  serve_admin:
-    if: ${{ inputs.serve_dashboard }}
-    needs:
-      - setup
-    ssh:
-      remoteHost: ${{ inputs.resource.ip }}
-    steps:
-      - name: Start Admin Dashboard
-        early-cancel: any-job-failed
-        run: |
-          export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.admin }}
-          python3 serve.py \
-            --port ${{ needs.setup.outputs.ADMIN_PORT }} \
             --output-dir ${PW_PARENT_JOB_DIR}/output/${PW_PLATFORM_HOST} \
-            --admin &
-          echo $! > ${PW_PARENT_JOB_DIR}/admin.pid
-          sleep inf
-        cleanup: |
-          pid=$(cat ${PW_PARENT_JOB_DIR}/admin.pid 2>/dev/null)
-          [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
-  create_session:
-    if: ${{ inputs.serve_dashboard }}
-    needs:
-      - setup
-    ssh:
-      remoteHost: ${{ inputs.resource.ip }}
-    steps:
+            > ${PW_PARENT_JOB_DIR}/dashboard.log 2>&1 &
+          echo $! > ${PW_PARENT_JOB_DIR}/service.pid
+      - name: Wait until the dashboard answers
+        run: curl -sf http://localhost:${{ needs.setup.outputs.SESSION_PORT }}/api/results > /dev/null
+        retry:
+          max-retries: 15
+          interval: 2s
       - name: Create DashboardSession
-        early-cancel: any-job-failed
         uses: parallelworks/update-session
         with:
           target: ${{ inputs.resource.id }}
           name: ${{ sessions.dashboard }}
-          remoteHost: 0.0.0.0
+          remoteHost: localhost
           remotePort: ${{ needs.setup.outputs.SESSION_PORT }}
-  create_session_admin:
+      - name: Keep dashboard alive
+        run: |
+          pid=$(cat ${PW_PARENT_JOB_DIR}/service.pid)
+          # Stay up while the server runs; end the job (and session) if it dies.
+          while kill -0 "${pid}" 2>/dev/null; do sleep 30; done
+          echo "::warning::Dashboard server exited — see dashboard.log"
+    cleanup:
+      - name: Stop dashboard server
+        run: |
+          pid=$(cat ${PW_PARENT_JOB_DIR}/service.pid 2>/dev/null)
+          [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
+  # Admin dashboard: same lifecycle, plus PW_API_KEY (the admin API shells out
+  # to `pw` to rerun and cancel runs).
+  serve_admin:
     if: ${{ inputs.serve_dashboard }}
     needs:
       - setup
+    env:
+      PW_API_KEY: ${{ env.PW_API_KEY }}
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
+      - name: Start admin dashboard server
+        run: |
+          export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.admin }}
+          nohup python3 serve.py \
+            --port ${{ needs.setup.outputs.ADMIN_PORT }} \
+            --output-dir ${PW_PARENT_JOB_DIR}/output/${PW_PLATFORM_HOST} \
+            --admin \
+            > ${PW_PARENT_JOB_DIR}/admin.log 2>&1 &
+          echo $! > ${PW_PARENT_JOB_DIR}/admin.pid
+      - name: Wait until the admin dashboard answers
+        run: curl -sf http://localhost:${{ needs.setup.outputs.ADMIN_PORT }}/api/results > /dev/null
+        retry:
+          max-retries: 15
+          interval: 2s
       - name: Create AdminSession
-        early-cancel: any-job-failed
         uses: parallelworks/update-session
         with:
           target: ${{ inputs.resource.id }}
           name: ${{ sessions.admin }}
-          remoteHost: 0.0.0.0
+          remoteHost: localhost
           remotePort: ${{ needs.setup.outputs.ADMIN_PORT }}
+      - name: Keep admin dashboard alive
+        run: |
+          pid=$(cat ${PW_PARENT_JOB_DIR}/admin.pid)
+          while kill -0 "${pid}" 2>/dev/null; do sleep 30; done
+          echo "::warning::Admin dashboard server exited — see admin.log"
+    cleanup:
+      - name: Stop admin dashboard server
+        run: |
+          pid=$(cat ${PW_PARENT_JOB_DIR}/admin.pid 2>/dev/null)
+          [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
 'on':
   execute:
     inputs:

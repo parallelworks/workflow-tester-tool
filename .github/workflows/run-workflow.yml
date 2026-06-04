@@ -49,15 +49,19 @@ jobs:
     steps:
       - name: Install pw CLI
         run: |
+          set -euo pipefail
           case "$(uname -m)" in
             x86_64)  arch=amd64 ;;
             aarch64) arch=arm64 ;;
             *) echo "::error::Unsupported architecture: $(uname -m)"; exit 1 ;;
           esac
           mkdir -p ~/bin
-          wget -q "https://activate.parallel.works/cli/pw-linux-${arch}" -O ~/bin/pw
+          # Pull the CLI from the platform we are targeting.
+          wget -q "https://${PW_PLATFORM_HOST}/cli/pw-linux-${arch}" -O ~/bin/pw
           chmod +x ~/bin/pw
           echo "$HOME/bin" >> "$GITHUB_PATH"
+          # Fail fast if the download is not a working binary.
+          ~/bin/pw --version
 
       - name: Authenticate pw CLI
         env:
@@ -66,15 +70,20 @@ jobs:
 
       - name: Create inputs.json
         run: |
-          cat > inputs.json << 'EOF'
+          set -euo pipefail
+          bucket_path='${{ inputs.bucket_path }}'
           {
-            "resource": "${{ inputs.resource }}",
-            "bucket": "${{ inputs.bucket }}",
-            "bucket_path": "${{ inputs.bucket_path }}",
-            "run_tests": ${{ inputs.run_tests }},
-            "serve_dashboard": ${{ inputs.serve_dashboard }}
-          }
-          EOF
+            echo '{'
+            echo '  "resource": "${{ inputs.resource }}",'
+            echo '  "bucket": "${{ inputs.bucket }}",'
+            # Omit bucket_path when blank so the workflow's own default applies.
+            if [ -n "${bucket_path}" ]; then
+              echo "  \"bucket_path\": \"${bucket_path}\","
+            fi
+            echo '  "run_tests": ${{ inputs.run_tests }},'
+            echo '  "serve_dashboard": ${{ inputs.serve_dashboard }}'
+            echo '}'
+          } > inputs.json
           echo "Workflow inputs:"
           cat inputs.json
 
