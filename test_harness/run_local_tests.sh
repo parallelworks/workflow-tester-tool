@@ -59,6 +59,7 @@ run_scenario() {  # $1 = scenario name, $2 = mock config file
   # Tiny poll intervals so the suite finishes in seconds, not minutes.
   export PW_TEST_POLL_INTERVAL=1 PW_TEST_SESSION_POLL_INTERVAL=1
   export PW_TEST_MAX_WAIT=30 PW_TEST_SESSION_MAX_WAIT=30
+  export PW_TEST_RERUN_PAUSE=1
 
   ( cd "${RUN_DIR}" && python3 -u run_tests.py \
         --platform "${PW_PLATFORM_HOST}" \
@@ -71,13 +72,13 @@ run_scenario() {  # $1 = scenario name, $2 = mock config file
 cat > "${CFG_DIR}/cfg_off.json" <<'JSON'
 {
   "clusters": { "pw://alvaro/a30gpuserver": "off" },
-  "launch":   { "marketplace.script_submitter.latest": "fail_400" }
+  "launch":   { "script_submitter": "fail_400" }
 }
 JSON
 run_scenario "a30gpuserver OFF (would-be launch failure is avoided)" "${CFG_DIR}/cfg_off.json"
-expect "workflows/marketplace.script_submitter.latest/test1" skipped   "off→skipped"
-expect "workflows/marketplace.script_submitter.latest/test2" skipped   "off→skipped"
-expect "sessions/marketplace.openvscode.latest/inputs"       completed "no-uri→runs"
+expect "workflows/script_submitter/test1"              skipped   "off→skipped"
+expect "workflows/script_submitter/test2"              skipped   "off→skipped"
+expect "sessions/marketplace.openvscode.latest/inputs" completed "no-uri→runs"
 
 # ── Scenario 2: GPU server ON → workflow tests run to completion ───────────────
 cat > "${CFG_DIR}/cfg_on.json" <<'JSON'
@@ -86,20 +87,39 @@ cat > "${CFG_DIR}/cfg_on.json" <<'JSON'
 }
 JSON
 run_scenario "a30gpuserver ON" "${CFG_DIR}/cfg_on.json"
-expect "workflows/marketplace.script_submitter.latest/test1" completed "on→runs"
-expect "workflows/marketplace.script_submitter.latest/test2" completed "on→runs"
-expect "sessions/marketplace.openvscode.latest/inputs"       completed "session→healthy"
+expect "workflows/script_submitter/test1"              completed "on→runs"
+expect "workflows/script_submitter/test2"              completed "on→runs"
+expect "sessions/marketplace.openvscode.latest/inputs" completed "session→healthy"
 
 # ── Scenario 3: resource status indeterminate (not listed) → launch attempted ──
 cat > "${CFG_DIR}/cfg_unknown.json" <<'JSON'
 {
   "clusters": {},
-  "launch":   { "marketplace.script_submitter.latest": "fail_400" }
+  "launch":   { "script_submitter": "fail_400" }
 }
 JSON
 run_scenario "a30gpuserver status indeterminate → not silently skipped" "${CFG_DIR}/cfg_unknown.json"
-expect "workflows/marketplace.script_submitter.latest/test1" launch_failed "unknown→attempted"
-expect "workflows/marketplace.script_submitter.latest/test2" launch_failed "unknown→attempted"
+expect "workflows/script_submitter/test1" launch_failed "unknown→attempted"
+expect "workflows/script_submitter/test2" launch_failed "unknown→attempted"
+
+# ── Scenario 4: 409 slug conflicts → recovered by retry + suite rerun ──────────
+# test1's workflow returns 409 four times before succeeding. With only 2 launch
+# retries per pass, the first pass exhausts them (launch_failed) and the rerun
+# rounds recover it. Fast backoff/poll so the scenario stays quick.
+cat > "${CFG_DIR}/cfg_conflict.json" <<'JSON'
+{
+  "clusters": { "pw://alvaro/a30gpuserver": "active" },
+  "conflict": { "script_submitter": 4 }
+}
+JSON
+export PW_TEST_LAUNCH_RETRIES=2 PW_TEST_LAUNCH_BACKOFF=1 PW_TEST_RERUN_PAUSE=1
+run_scenario "409 slug conflict recovered via retry + rerun" "${CFG_DIR}/cfg_conflict.json"
+unset PW_TEST_LAUNCH_RETRIES PW_TEST_LAUNCH_BACKOFF PW_TEST_RERUN_PAUSE
+# script_submitter has a single shared conflict counter; whichever test consumes
+# the 4th+ attempt completes. Assert the suite ultimately recovers both workflow
+# tests to completed (no launch_failed left after reruns).
+expect "workflows/script_submitter/test1"              completed "conflict→recovered"
+expect "workflows/script_submitter/test2"              completed "conflict→recovered"
 
 # ── summary ────────────────────────────────────────────────────────────────────
 echo ""

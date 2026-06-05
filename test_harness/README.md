@@ -28,6 +28,10 @@ suite finishes in seconds.
 | Resource **off** | `off` | workflow tests `skipped` (launch never attempted); session test still runs |
 | Resource **on** | `active` | workflow + session tests `completed` |
 | Resource **indeterminate** | not listed | launch attempted anyway (`launch_failed` here) — never silently skipped |
+| **409 slug conflict** | `active` | launch 409s repeatedly, then recovers via in-launch retry + suite rerun → `completed` |
+
+The mock supports a `"conflict": {"<workflow>": N}` config key to make the
+first N launch attempts return a `409 ... is already in use` error.
 
 The "off" scenario reproduces run `00008`, where `test1`/`test2` failed with
 *"Unable to find workflow"* because the GPU server was unavailable: with the
