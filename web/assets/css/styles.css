@@ -2935,6 +2935,16 @@ th[data-sortable][data-sort-dir="desc"]::after {
   background: transparent;
   font-size: 0.65rem;
 }
+.badge.skipped {
+  color: var(--muted);
+  background: rgba(136, 144, 164, 0.14);
+}
+.badge.skipped::before {
+  content: "\2298";   /* ⊘ — resource off, test not run */
+  width: auto; height: auto;
+  background: transparent;
+  font-size: 0.65rem;
+}
 
 /* ── JSON viewer ─────────────────────────────────────────────────── */
 .json-viewer {

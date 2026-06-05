@@ -172,7 +172,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         total   = len(results)
         passed  = sum(1 for r in results if r["status"] == "completed")
         running = sum(1 for r in results if r["status"] == "running")
-        failed  = total - passed - running
+        skipped = sum(1 for r in results if r["status"] == "skipped")
+        # Skipped tests (resource off) are neither passes nor failures.
+        failed  = total - passed - running - skipped
+        # Pass rate is measured over tests that actually ran (exclude skipped/running).
+        rated   = passed + failed
 
         status_counts:   dict = {}
         workflow_counts: dict = {}
@@ -188,8 +192,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "total":           total,
                 "passed":          passed,
                 "running":         running,
+                "skipped":         skipped,
                 "failed":          failed,
-                "pass_rate":       round(passed / total * 100, 1) if total else 0,
+                "pass_rate":       round(passed / rated * 100, 1) if rated else 0,
                 "last_run":        results[0]["started_at"] if results else None,
                 "status_counts":   status_counts,
                 "workflow_counts": workflow_counts,

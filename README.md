@@ -50,11 +50,17 @@ The workflow URL redirects automatically to the public dashboard. To reach the a
 | Status | Meaning |
 |---|---|
 | `completed` | **Pass** — run finished successfully, or session became healthy |
+| `skipped` | Target resource was off — test was not launched (not counted as a failure) |
 | `error` | Run ended in an error state |
 | `timeout` | Exceeded the per-test time limit (1 h for workflows, 30 min for sessions) |
 | `canceled` | Run was canceled outside of the test framework |
 | `launch_failed` | The `pw workflows run` command itself failed |
 | `poll_error` | Could not reach the platform API after repeated retries |
+
+> Before launching, each test whose inputs target a `pw://` compute resource is
+> checked with `pw cluster ls`. If the resource is **off**, the test is reported
+> as `skipped` instead of being launched and failing — so an idle GPU server
+> never shows up as a red failure on the dashboard.
 
 ---
 
