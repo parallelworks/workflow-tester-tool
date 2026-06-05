@@ -161,7 +161,7 @@ PW_BASE_PATH=/me/session/alvaro/test python serve.py
 
 | Flag | Default | Description |
 |---|---|---|
-| `--host HOST` | `0.0.0.0` | Bind address |
+| `--host HOST` | `::` (dual-stack IPv6, or `0.0.0.0` if no IPv6) | Bind address |
 | `--port PORT` | `8080` | Bind port |
 | `--output-dir DIR` | `./output/` | Root directory of test outputs |
 | `--prefix PREFIX` | `$PW_BASE_PATH` | URL prefix to strip (reverse proxy deployments) |
@@ -229,7 +229,7 @@ Tuning env vars (all optional): `PW_TEST_LAUNCH_RETRIES`, `PW_TEST_LAUNCH_BACKOF
 
 ### `serve.py`
 
-- `ThreadingHTTPServer` backed by `DashboardHandler` (extends `SimpleHTTPRequestHandler`)
+- `DualStackHTTPServer` (a `ThreadingHTTPServer`) backed by `DashboardHandler` (extends `SimpleHTTPRequestHandler`). Binds `::` with `IPV6_V6ONLY` disabled so the proxy reaches it over IPv4 **or** IPv6; falls back to `0.0.0.0` on hosts without IPv6. This avoids the `{"error":true,"message":"Proxy Error"}` seen when the proxy resolved the session hostname to IPv6 but the server only listened on IPv4.
 - `GET /api/results` — scans `output/` for `result.json` files and returns aggregated JSON
 - `GET /api/results/<test>/inputs` — returns the matching `<test>.json` inputs file
 - In `--admin` mode:
