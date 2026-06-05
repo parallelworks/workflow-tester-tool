@@ -22,6 +22,7 @@ import argparse
 import datetime
 import json
 import os
+import random
 import re
 import signal
 import subprocess
@@ -57,9 +58,23 @@ SESSION_POLL_INTERVAL = _env_int("PW_TEST_SESSION_POLL_INTERVAL", 10)
 SESSION_MAX_WAIT = _env_int("PW_TEST_SESSION_MAX_WAIT", 1800)  # 30-min ceiling (cluster boot is slow)
 SESSION_HEALTHY_STATUS = "running"
 
-# Launch retry on 409 Conflict (platform serialises same-workflow runs)
-LAUNCH_RETRIES = 5
-LAUNCH_BACKOFF = 10           # seconds; doubles on each retry
+# Launch retry on 409 Conflict. Two distinct 409s occur in practice:
+#   • "platform serialises same-workflow runs"  → another run of this workflow
+#     is mid-launch elsewhere.
+#   • "Slug 'mp-desktop-00NNN' is already in use" → two launches raced for the
+#     same auto-generated slug number.
+# Both are transient: retrying lets the platform hand out the next slug. We also
+# serialise our own same-workflow launches (see _launch_lock) so concurrent
+# workers don't inflict the slug race on themselves, and jitter the backoff so
+# retries don't stay synchronised into a thundering herd.
+LAUNCH_RETRIES = _env_int("PW_TEST_LAUNCH_RETRIES", 6)
+LAUNCH_BACKOFF = _env_int("PW_TEST_LAUNCH_BACKOFF", 4)  # base seconds; grows, capped, +jitter
+LAUNCH_BACKOFF_CAP = 45
+
+# After the main pass, tests left in launch_failed are retried this many extra
+# rounds (contention has usually subsided by then).
+RERUN_ROUNDS = _env_int("PW_TEST_RERUN_ROUNDS", 2)
+RERUN_PAUSE = _env_int("PW_TEST_RERUN_PAUSE", 10)  # seconds between rerun rounds
 
 TERMINAL = {"completed", "error", "canceled", "failed"}
 KINDS = ("workflows", "sessions")
@@ -97,6 +112,27 @@ def _track(slug: str, test: "TestCase") -> None:
 def _untrack(slug: str) -> None:
     with _active_lock:
         _active.pop(slug, None)
+
+
+# ── Per-workflow launch serialisation ─────────────────────────────────────────
+# The platform's run slug (e.g. mp-desktop-00340) is auto-numbered per workflow,
+# so two concurrent launches of the same workflow can collide on the slug. We
+# serialise launches per (platform, workflow) to avoid inflicting that race on
+# ourselves; launches of *different* workflows still run in parallel, and the
+# polling phase is never serialised.
+
+_launch_locks: dict[tuple[str, str], threading.Lock] = {}
+_launch_locks_guard = threading.Lock()
+
+
+def _launch_lock(platform: str, workflow: str) -> threading.Lock:
+    key = (platform, workflow)
+    with _launch_locks_guard:
+        lock = _launch_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _launch_locks[key] = lock
+        return lock
 
 
 def _cancel_all_active() -> None:
@@ -434,17 +470,28 @@ def _launch(
     ]
     logger.log(f"Command: {' '.join(launch_cmd)}")
 
+    lock = _launch_lock(test.platform, test.workflow)
+    last_err = ""
+
     for attempt in range(1, LAUNCH_RETRIES + 1):
         if attempt > 1:
-            backoff = LAUNCH_BACKOFF * (2 ** (attempt - 2))
-            logger.log(f"Attempt {attempt}/{LAUNCH_RETRIES}: waiting {backoff}s after 409 Conflict...")
+            # Exponential backoff, capped, with jitter so concurrent retries of
+            # the same workflow don't re-collide in lock-step.
+            backoff = min(LAUNCH_BACKOFF * (2 ** (attempt - 2)), LAUNCH_BACKOFF_CAP)
+            backoff += random.uniform(0, LAUNCH_BACKOFF)
+            logger.log(f"Attempt {attempt}/{LAUNCH_RETRIES}: waiting {backoff:.1f}s after 409 Conflict...")
             time.sleep(backoff)
         else:
             logger.log(f"Attempt {attempt}/{LAUNCH_RETRIES}...")
 
-        rc, out, err = _cmd(launch_cmd, timeout=60)
+        # Serialise the launch command itself per workflow (cheap, ~1s); the
+        # backoff sleep above stays outside the lock so other same-workflow
+        # tests aren't blocked while one waits.
+        with lock:
+            rc, out, err = _cmd(launch_cmd, timeout=60)
         logger.log(f"  exit={rc}")
         if err:
+            last_err = err
             logger.log(f"  stderr: {err[:400]}")
 
         if rc == 0:
@@ -463,7 +510,8 @@ def _launch(
                 return None
 
         if "409" in err and attempt < LAUNCH_RETRIES:
-            logger.log("  409 Conflict — will retry")
+            reason = "slug already in use" if "in use" in err.lower() else "platform busy"
+            logger.log(f"  409 Conflict ({reason}) — will retry")
             continue
 
         result.status = "launch_failed"
@@ -474,7 +522,7 @@ def _launch(
         return None
 
     result.status = "launch_failed"
-    result.error = f"Exhausted {LAUNCH_RETRIES} launch retries (repeated 409 Conflict)"
+    result.error = f"Exhausted {LAUNCH_RETRIES} launch retries (repeated 409 Conflict). Last: {last_err[:200]}"
     result.duration = time.monotonic() - start
     logger.log(f"ERROR: {result.error}")
     _write_result(result, started_at)
@@ -839,6 +887,30 @@ def print_summary(results: list[TestResult], output_base: Path) -> bool:
     return not failed
 
 
+# ── Suite runner ──────────────────────────────────────────────────────────────
+
+def run_suite(
+    tests: list[TestCase],
+    output_base: Path,
+    workers: int,
+    label: str = "",
+) -> list[TestResult]:
+    """Run a set of tests concurrently, printing one line per finished test."""
+    results: list[TestResult] = []
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(run_test, t, output_base): t for t in tests}
+        for future in as_completed(futures):
+            r = future.result()
+            results.append(r)
+            slug_info = f"  [{r.slug}]" if r.slug else ""
+            kind_tag = f"[{r.test.kind[:4]}]"
+            print(
+                f"  {_icon(r.status)} {kind_tag} {label}{r.test.id}"
+                f"  →  {r.status.upper()}  ({r.duration:.1f}s){slug_info}"
+            )
+    return results
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -867,6 +939,10 @@ def main() -> None:
                     help="Root directory for test output (default: ./output/)")
     ap.add_argument("--workers", type=int, default=10,
                     help="Max parallel workers (default: 10)")
+    ap.add_argument("--rerun-launch-failed", type=int, default=RERUN_ROUNDS,
+                    metavar="N",
+                    help=f"Extra rounds to retry tests left in launch_failed "
+                         f"(default: {RERUN_ROUNDS}; 0 disables)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Discover and list tests without executing them")
     args = ap.parse_args()
@@ -899,20 +975,23 @@ def main() -> None:
     print(f"\nRunning {len(tests)} test(s) in parallel (workers={args.workers})...")
     print(f"Output: {output_base}/\n")
 
-    results: list[TestResult] = []
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = {executor.submit(run_test, t, output_base): t for t in tests}
-        for future in as_completed(futures):
-            r = future.result()
-            results.append(r)
-            slug_info = f"  [{r.slug}]" if r.slug else ""
-            kind_tag = f"[{r.test.kind[:4]}]"
-            print(
-                f"  {_icon(r.status)} {kind_tag} {r.test.id}"
-                f"  →  {r.status.upper()}  ({r.duration:.1f}s){slug_info}"
-            )
+    results = run_suite(tests, output_base, args.workers)
 
-    success = print_summary(results, output_base)
+    # Retry tests left in launch_failed — these are almost always transient
+    # 409 slug conflicts, and contention has usually subsided by now.
+    by_id = {r.test.id: r for r in results}
+    for round_n in range(1, args.rerun_launch_failed + 1):
+        retry = [r.test for r in by_id.values() if r.status == "launch_failed"]
+        if not retry:
+            break
+        if RERUN_PAUSE:
+            time.sleep(RERUN_PAUSE)
+        print(f"\nRerun round {round_n}/{args.rerun_launch_failed}: "
+              f"retrying {len(retry)} launch_failed test(s)...")
+        for r in run_suite(retry, output_base, args.workers, label="(rerun) "):
+            by_id[r.test.id] = r
+
+    success = print_summary(list(by_id.values()), output_base)
     sys.exit(0 if success else 1)
 
 

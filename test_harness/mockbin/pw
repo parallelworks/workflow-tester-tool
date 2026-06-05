@@ -127,6 +127,21 @@ def cmd_workflows_run(argv):
         )
         return 1
 
+    # Simulate transient 409 slug conflicts: the first N launch attempts of this
+    # workflow return 409, then it succeeds (counter persists across attempts).
+    conflicts = CONFIG.get("conflict", {}).get(wf, 0)
+    if conflicts:
+        cfile = STATE / f"conflict-{wf.replace('/', '_')}"
+        seen = int(cfile.read_text()) if cfile.exists() else 0
+        if seen < conflicts:
+            cfile.write_text(str(seen + 1))
+            sys.stderr.write(
+                "2026-06-05T00:00:00Z [FATAL] API error 409 409 Conflict: "
+                '{"error":true,"message":"Slug \'mp-desktop-%05d\' is already in use"}\n'
+                % (340 + seen)
+            )
+            return 1
+
     # PID-based slug: unique per launch process, race-free without a shared
     # counter, and stable for the view/cancel calls that reference it later.
     short = wf.replace("marketplace.", "mp-").replace(".latest", "").replace(".", "-")

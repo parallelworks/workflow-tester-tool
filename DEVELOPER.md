@@ -221,8 +221,11 @@ output/
 - Shell helper `_cmd()` wraps every `pw` call with a timeout and ANSI stripping
 - Stale per-run artifacts (`launch.json`/`view.json`/`errors.txt`/`session.json`) are cleared at the start of each test
 - Active run slugs are tracked in `_active` so SIGTERM/SIGINT cancels them on the platform
-- 409 Conflict on launch → exponential backoff retry (up to 5 attempts: 10 s, 20 s, 40 s, …)
+- 409 Conflict on launch (incl. "slug already in use") → jittered exponential-backoff retry, and same-workflow launches are serialised (`_launch_lock`) so concurrent workers don't race for the auto-numbered slug
+- Tests left in `launch_failed` after the main pass are retried for `--rerun-launch-failed` extra rounds (default 2), once contention has subsided
 - Exit code reflects failures only (`skipped` never fails the suite). The `workflow.yaml` `run_tests` step swallows the exit code so test failures don't tear down the dashboard sessions.
+
+Tuning env vars (all optional): `PW_TEST_LAUNCH_RETRIES`, `PW_TEST_LAUNCH_BACKOFF`, `PW_TEST_RERUN_ROUNDS`, `PW_TEST_RERUN_PAUSE`, plus the poll-timing ones (`PW_TEST_POLL_INTERVAL`, `PW_TEST_SESSION_POLL_INTERVAL`, `PW_TEST_MAX_WAIT`, `PW_TEST_SESSION_MAX_WAIT`).
 
 ### `serve.py`
 
