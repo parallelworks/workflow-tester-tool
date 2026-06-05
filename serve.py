@@ -25,6 +25,7 @@ Usage:
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -298,6 +299,46 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         pass  # suppress per-request logs
 
 
+# ── Server (dual-stack IPv6) ───────────────────────────────────────────────────
+
+class DualStackHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that binds IPv6 dual-stack when given an IPv6 host.
+
+    The ACTIVATE proxy may resolve the session hostname to an IPv6 address
+    first. A plain IPv4 ('0.0.0.0') bind then refuses that connection and the
+    proxy returns {"error":true,"message":"Proxy Error"}. Binding to '::' with
+    IPV6_V6ONLY disabled accepts both IPv4 and IPv6 clients on dual-stack hosts.
+    """
+
+    def __init__(self, server_address, *args, **kwargs):
+        if ":" in server_address[0]:
+            self.address_family = socket.AF_INET6
+        super().__init__(server_address, *args, **kwargs)
+
+    def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            try:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except (AttributeError, OSError):
+                # No dual-stack support — IPv6-only is still better than failing.
+                pass
+        super().server_bind()
+
+
+def _default_bind_host() -> str:
+    """Prefer dual-stack IPv6 ('::'); fall back to IPv4 ('0.0.0.0') with no IPv6.
+
+    Mirrors the fix in librechat-singularity-manager: the platform proxy may
+    resolve the hostname to IPv6 first, so an IPv4-only bind causes "Proxy Error".
+    """
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        s.close()
+        return "::"
+    except OSError:
+        return "0.0.0.0"
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -316,7 +357,9 @@ Admin mode:
   Serves admin.html as root.
 """,
     )
-    ap.add_argument("--host",       default="0.0.0.0")
+    ap.add_argument("--host",       default=None,
+                    help="Bind address (default: '::' dual-stack IPv6, "
+                         "or '0.0.0.0' when the host has no IPv6)")
     ap.add_argument("--port",       type=int, default=8080)
     ap.add_argument("--output-dir", default=str(TESTS_DIR / "output"))
     ap.add_argument(
@@ -336,11 +379,13 @@ Admin mode:
     DashboardHandler.url_prefix = args.prefix.rstrip("/")
     DashboardHandler.admin_mode = args.admin
 
-    server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    bind_host = args.host or _default_bind_host()
+    server = DualStackHTTPServer((bind_host, args.port), DashboardHandler)
     mode = "ADMIN" if args.admin else "public (read-only)"
     print(f"Workflow Test Dashboard: http://localhost:{args.port}/")
     print(f"  Output directory: {DashboardHandler.output_dir}")
     print(f"  Mode:             {mode}")
+    print(f"  Bind host:        {bind_host}")
     if args.prefix:
         print(f"  Prefix:           {args.prefix}")
     print("Press Ctrl+C to stop.")
