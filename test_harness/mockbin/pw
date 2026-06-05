@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""
+Mock `pw` CLI for offline, deterministic testing of run_tests.py / serve.py.
+
+Behaviour is driven by a JSON config pointed to by $MOCK_PW_CONFIG and a small
+amount of per-slug state under $MOCK_PW_STATE (so `workflows runs view` can move
+a run from "running" to a terminal status across polls).
+
+Config schema (all keys optional):
+{
+  "clusters": { "pw://alvaro/a30gpuserver": "off", "pw://alvaro/box": "active" },
+  "launch":   { "marketplace.script_submitter.latest": "fail_400" },   # else launches ok
+  "runs":     { "marketplace.script_submitter.latest": "completed" },  # terminal status to settle on
+  "errors":   { "marketplace.script_submitter.latest": "boom: it broke" }
+}
+"""
+import json
+import os
+import sys
+from pathlib import Path
+
+CONFIG = {}
+cfg_path = os.environ.get("MOCK_PW_CONFIG", "")
+if cfg_path and Path(cfg_path).exists():
+    try:
+        CONFIG = json.loads(Path(cfg_path).read_text())
+    except (json.JSONDecodeError, OSError):
+        CONFIG = {}
+
+STATE = Path(os.environ.get("MOCK_PW_STATE", "/tmp/mock_pw_state"))
+STATE.mkdir(parents=True, exist_ok=True)
+
+
+def out(obj):
+    print(json.dumps(obj) if not isinstance(obj, str) else obj)
+
+
+def get_opt(argv, name):
+    """Return the value following `name` in argv, or None."""
+    if name in argv:
+        i = argv.index(name)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+def strip_globals(argv):
+    """Drop global flags (--platform-host X, --context X, -v) and return the rest."""
+    rest, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--platform-host", "--context"):
+            i += 2
+            continue
+        if a in ("-v", "--verbose"):
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return rest
+
+
+def positionals(argv, known_flags_with_values=("-i", "--name", "-o", "--status")):
+    """Return argv entries that are not flags or flag values."""
+    pos, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("-"):
+            if a in known_flags_with_values:
+                i += 2
+            else:
+                i += 1
+            continue
+        pos.append(a)
+        i += 1
+    return pos
+
+
+def cmd_cluster_ls(argv):
+    clusters = CONFIG.get("clusters", {})
+    status_filter = get_opt(argv, "--status")
+    if status_filter == "on":
+        status_filter = "active"
+    fmt = get_opt(argv, "-o") or "interactive"
+    # positional after "cluster ls" may be a URI
+    pos = [p for p in positionals(argv) if p not in ("cluster", "ls", "list")]
+    uri = pos[0] if pos else None
+
+    def record(u, st):
+        return {
+            "uri": u,
+            "name": u.rsplit("/", 1)[-1],
+            "namespace": u.split("/")[2] if u.count("/") >= 3 else "",
+            "status": st,
+            "currentlyProvisioning": st == "provisioning",
+            "type": "existing",
+        }
+
+    if uri:
+        if uri not in clusters:
+            # Mimic the CLI's non-JSON notice when nothing matches.
+            print("No clusters found")
+            return 0
+        recs = [record(uri, clusters[uri])]
+    else:
+        recs = [record(u, st) for u, st in clusters.items()]
+
+    if status_filter:
+        recs = [r for r in recs if r["status"] == status_filter]
+
+    if fmt == "table":
+        print(f"{'URI':40} {'STATUS':14} TYPE")
+        for r in recs:
+            print(f"{r['uri']:40} {r['status']:14} {r['type']}")
+    else:
+        out(recs)
+    return 0
+
+
+def cmd_workflows_run(argv):
+    wf = positionals(argv)[-1]  # workflow name is the trailing positional
+    behaviour = CONFIG.get("launch", {}).get(wf, "ok")
+    if behaviour == "fail_400":
+        sys.stderr.write(
+            '2026-06-05T00:00:00Z [FATAL] API error 400 400 Bad Request: '
+            '{"error":true,"message":"Unable to find workflow %s"}\n' % wf
+        )
+        return 1
+
+    # PID-based slug: unique per launch process, race-free without a shared
+    # counter, and stable for the view/cancel calls that reference it later.
+    short = wf.replace("marketplace.", "mp-").replace(".latest", "").replace(".", "-")
+    n = os.getpid()
+    slug = f"{short}-{n:06d}"
+
+    (STATE / f"slug-{slug}").write_text(json.dumps({"workflow": wf, "polls": 0}))
+    out({"run": {"slug": slug, "status": "running", "workflowName": wf, "number": n}})
+    return 0
+
+
+def _slug_state(slug):
+    f = STATE / f"slug-{slug}"
+    return json.loads(f.read_text()) if f.exists() else {"workflow": slug, "polls": 0}
+
+
+def cmd_workflows_runs(argv):
+    sub = argv[2] if len(argv) > 2 else ""
+    pos = [p for p in positionals(argv) if p not in ("workflows", "workflow", "runs", sub)]
+    slug = pos[0] if pos else ""
+
+    if sub == "view":
+        st = _slug_state(slug)
+        st["polls"] += 1
+        (STATE / f"slug-{slug}").write_text(json.dumps(st))
+        terminal = CONFIG.get("runs", {}).get(st["workflow"], "completed")
+        # First poll: still running; subsequent polls: settle on terminal status.
+        status = "running" if st["polls"] < 2 else terminal
+        out({"slug": slug, "status": status, "workflowName": st["workflow"]})
+        return 0
+
+    if sub == "cancel":
+        print(f"Run {slug} canceled")
+        return 0
+
+    if sub == "errors":
+        st = _slug_state(slug)
+        print(CONFIG.get("errors", {}).get(st["workflow"], ""))
+        return 0
+
+    sys.stderr.write(f"mock pw: unknown 'workflows runs {sub}'\n")
+    return 2
+
+
+def cmd_sessions_ls(argv):
+    # Return a healthy session for every launched slug.
+    sessions = []
+    for f in STATE.glob("slug-*"):
+        slug = f.name[len("slug-"):]
+        st = json.loads(f.read_text())
+        sessions.append({
+            "name": f"{st['workflow']}_{slug}_session",
+            "status": "running",
+            "workflowRun": {"slug": slug, "name": st["workflow"], "status": "running"},
+        })
+    out(sessions)
+    return 0
+
+
+def main():
+    argv = strip_globals(sys.argv[1:])
+    if not argv:
+        return 0
+    group = argv[0]
+
+    if group in ("cluster", "clusters") and len(argv) > 1 and argv[1] in ("ls", "list"):
+        return cmd_cluster_ls(argv)
+    if group in ("workflows", "workflow") and len(argv) > 1:
+        if argv[1] == "run":
+            return cmd_workflows_run(argv)
+        if argv[1] == "runs":
+            return cmd_workflows_runs(argv)
+    if group == "sessions" and len(argv) > 1 and argv[1] in ("ls", "list"):
+        return cmd_sessions_ls(argv)
+
+    sys.stderr.write(f"mock pw: unhandled command: {' '.join(argv)}\n")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

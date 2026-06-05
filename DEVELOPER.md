@@ -55,6 +55,22 @@ Tests are plain JSON files in a five-level path:
 
 Use `sessions` for workflows that start an interactive session and never complete on their own (VS Code, JupyterLab, Desktop, etc.).
 
+### Resource (cluster) gate
+
+If a test's inputs contain a `resource` with a `pw://…` `uri`, the runner first
+calls `pw cluster ls <uri> -o json` and reads the cluster's status:
+
+- **on** (`active`/`on`/`running`/…) → launch the test as normal.
+- **off** (`off`/`stopped`/`failed`/`provisioning`/…) → report `skipped`; the
+  test is *not* launched, and it does **not** count as a failure.
+- **indeterminate** (lookup failed, resource not listed, unrecognised status) →
+  a warning is logged and the test is launched anyway, so a transient glitch
+  never silently skips everything.
+
+Tests whose resource has no `pw://` URI (e.g. a `managed-cluster` provisioned by
+the workflow itself) are never gated. Skip decisions and the observed status are
+written to each test's `run.log` under the `RESOURCE CHECK` section.
+
 ### Test file format
 
 Each `.json` file is the raw input object passed verbatim to `pw workflows run -i`. No wrapper or metadata needed.
@@ -200,10 +216,13 @@ output/
 
 - Discovers test JSON files with `discover_tests()` (glob over the five-level hierarchy)
 - Runs up to `--workers` tests concurrently via `ThreadPoolExecutor`
+- Resource gate (`_resource_gate()`) checks `pw cluster ls` before launch and reports `skipped` when the target resource is off
 - Two dispatchers: `_run_workflow_test()` and `_run_session_test()`
 - Shell helper `_cmd()` wraps every `pw` call with a timeout and ANSI stripping
+- Stale per-run artifacts (`launch.json`/`view.json`/`errors.txt`/`session.json`) are cleared at the start of each test
 - Active run slugs are tracked in `_active` so SIGTERM/SIGINT cancels them on the platform
 - 409 Conflict on launch → exponential backoff retry (up to 5 attempts: 10 s, 20 s, 40 s, …)
+- Exit code reflects failures only (`skipped` never fails the suite). The `workflow.yaml` `run_tests` step swallows the exit code so test failures don't tear down the dashboard sessions.
 
 ### `serve.py`
 

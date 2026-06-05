@@ -19,7 +19,7 @@ jobs:
         uses: parallelworks/checkout
         with:
           repo: https://github.com/parallelworks/workflow-tester-tool.git
-          branch: main
+          branch: dev
       - name: Get Session Ports
         if: ${{ inputs.serve_dashboard }}
         run: |
@@ -42,19 +42,31 @@ jobs:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
       - name: Run Tests
-        early-cancel: any-job-failed
         run: |
           set -x
           echo "PW_PLATFORM_HOST=${PW_PLATFORM_HOST:-NOT_SET}"
           echo "PW_USER=${PW_USER:-NOT_SET}"
           export PATH=$HOME/pw:$PATH
           cd ${PW_PARENT_JOB_DIR}
+
+          # Log current cluster states up front — makes "why was this skipped?"
+          # answerable straight from the job log.
+          echo "::group::Cluster states"
+          pw --platform-host "${PW_PLATFORM_HOST}" cluster ls -o table || true
+          echo "::endgroup::"
+
+          # Test failures are data, not workflow failures: never let a non-zero
+          # exit fail this job, or the serve_* jobs would be early-cancelled and
+          # the dashboards would never come up.
           python3 -u run_tests.py \
             --platform "${PW_PLATFORM_HOST}" \
-            --user "${PW_USER}"
+            --user "${PW_USER}" \
+            --output-dir "${PW_PARENT_JOB_DIR}/output" \
+            || echo "::warning::run_tests.py exited non-zero — see the dashboard for failing tests"
       - name: Transfer outputs to bucket
+        if: ${{ always }}
         run: |
-          pw buckets cp -r output ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}
+          pw buckets cp -r "${PW_PARENT_JOB_DIR}/output" ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}
   serve:
     if: ${{ inputs.serve_dashboard }}
     needs:
@@ -68,7 +80,7 @@ jobs:
           export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.dashboard }}
           python3 serve.py \
             --port ${{ needs.setup.outputs.SESSION_PORT }} \
-            --output-dir ${PW_PARENT_JOB_DIR}/output/${PW_PLATFORM_HOST} &
+            --output-dir ${PW_PARENT_JOB_DIR}/output &
           echo $! > ${PW_PARENT_JOB_DIR}/service.pid
           sleep inf
         cleanup: |
@@ -87,7 +99,7 @@ jobs:
           export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.admin }}
           python3 serve.py \
             --port ${{ needs.setup.outputs.ADMIN_PORT }} \
-            --output-dir ${PW_PARENT_JOB_DIR}/output/${PW_PLATFORM_HOST} \
+            --output-dir ${PW_PARENT_JOB_DIR}/output \
             --admin &
           echo $! > ${PW_PARENT_JOB_DIR}/admin.pid
           sleep inf

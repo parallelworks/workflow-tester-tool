@@ -36,14 +36,25 @@ from typing import Optional
 
 TESTS_DIR = Path(__file__).parent
 
-# Workflow tests: poll until the run reaches a terminal status
-POLL_INTERVAL = 5
-MAX_WAIT = 3600
-MAX_POLL_ERRORS = 10
+
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int from the environment, falling back to `default`."""
+    try:
+        val = int(os.environ.get(name, ""))
+        return val if val > 0 else default
+    except ValueError:
+        return default
+
+
+# Workflow tests: poll until the run reaches a terminal status.
+# Timing is env-overridable so test harnesses can run without real waits.
+POLL_INTERVAL = _env_int("PW_TEST_POLL_INTERVAL", 5)
+MAX_WAIT = _env_int("PW_TEST_MAX_WAIT", 3600)
+MAX_POLL_ERRORS = _env_int("PW_TEST_MAX_POLL_ERRORS", 10)
 
 # Session tests: poll until a healthy session appears, then cancel
-SESSION_POLL_INTERVAL = 10
-SESSION_MAX_WAIT = 1800       # 30-minute ceiling (cluster boot can be slow)
+SESSION_POLL_INTERVAL = _env_int("PW_TEST_SESSION_POLL_INTERVAL", 10)
+SESSION_MAX_WAIT = _env_int("PW_TEST_SESSION_MAX_WAIT", 1800)  # 30-min ceiling (cluster boot is slow)
 SESSION_HEALTHY_STATUS = "running"
 
 # Launch retry on 409 Conflict (platform serialises same-workflow runs)
@@ -52,6 +63,23 @@ LAUNCH_BACKOFF = 10           # seconds; doubles on each retry
 
 TERMINAL = {"completed", "error", "canceled", "failed"}
 KINDS = ("workflows", "sessions")
+
+# ── Resource (cluster) status gate ────────────────────────────────────────────
+# Before launching a test we check that its target compute resource is on, using
+# `pw cluster ls <uri>`. Tests whose resource is off are reported as "skipped"
+# rather than "failed" so an idle GPU server doesn't pollute the dashboard.
+#
+# `pw cluster ls --status` documents the vocabulary as active / off / failed
+# (with `on` an alias for `active`). We normalise the per-cluster status string
+# against these sets; anything we don't recognise is treated as indeterminate
+# and the test is launched anyway (with a warning) so a glitch never silently
+# skips everything.
+CLUSTER_STATUS_FIELDS = ("status", "provisionStatus", "state")
+CLUSTER_ON_STATES = {"active", "on", "running", "ready", "provisioned", "up", "healthy"}
+CLUSTER_OFF_STATES = {
+    "off", "stopped", "inactive", "disabled", "deleted", "deleting",
+    "failed", "error", "terminated", "stopping", "down",
+}
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mKHJ]")
 
@@ -174,6 +202,113 @@ def _cmd(args: list[str], timeout: int = 60) -> tuple[int, str, str]:
         return -1, "", f"Executable not found: {args[0]}"
     except Exception as exc:
         return -1, "", f"Unexpected subprocess error: {exc}"
+
+
+def _rel(path: Path) -> str:
+    """Path relative to TESTS_DIR for display, or the absolute path if outside it."""
+    try:
+        return f"{path.relative_to(TESTS_DIR)}"
+    except ValueError:
+        return str(path)
+
+
+# ── Resource (cluster) status gate ────────────────────────────────────────────
+
+def _resource_uri(test: "TestCase") -> Optional[str]:
+    """Return the test's target compute-resource URI (pw://…), or None."""
+    try:
+        inputs = json.loads(test.inputs_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    resource = inputs.get("resource") if isinstance(inputs, dict) else None
+    if isinstance(resource, dict):
+        uri = resource.get("uri")
+        if isinstance(uri, str) and uri.startswith("pw://"):
+            return uri
+    return None
+
+
+def _find_cluster_record(out: str, uri: str) -> Optional[dict]:
+    """Locate the cluster record matching `uri` in `pw cluster ls -o json` output.
+
+    `pw cluster ls` records carry `name`/`user` rather than a `uri` field, so we
+    match on the name (last URI segment) and, when present, the namespace/user.
+    """
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None  # CLI prints a non-JSON "No clusters found" notice
+    records = [r for r in (data if isinstance(data, list) else [data]) if isinstance(r, dict)]
+
+    name = uri.rstrip("/").rsplit("/", 1)[-1]
+    namespace = uri.split("/")[2] if uri.count("/") >= 3 else None
+    for rec in records:
+        if rec.get("uri") == uri:
+            return rec
+        if rec.get("name") == name and (namespace is None
+                                        or rec.get("user") in (None, namespace)
+                                        or rec.get("namespace") in (None, namespace)):
+            return rec
+    # A single record returned for a specific-URI query is unambiguous.
+    return records[0] if len(records) == 1 else None
+
+
+def _cluster_status_label(rec: dict) -> str:
+    """Human-readable status for a cluster record (first non-empty known field)."""
+    if rec.get("currentlyProvisioning") is True:
+        return "provisioning"
+    for field in CLUSTER_STATUS_FIELDS:
+        val = rec.get(field)
+        if isinstance(val, str) and val.strip():
+            return val.strip().lower()
+        if isinstance(val, dict):  # e.g. {"state": "off"}
+            for nested in ("status", "state", "phase"):
+                nv = val.get(nested)
+                if isinstance(nv, str) and nv.strip():
+                    return nv.strip().lower()
+    return ""
+
+
+def _resource_gate(test: "TestCase", logger: "RunLogger") -> Optional[str]:
+    """
+    Check that the test's target resource is on before launching.
+
+    Returns a skip-reason string when the resource is confirmed *not* on, or
+    None to proceed. When the status cannot be determined we log a warning and
+    return None (proceed) so transient lookup failures never silently skip tests.
+    """
+    uri = _resource_uri(test)
+    if not uri:
+        logger.log("No pw:// compute resource in inputs — resource gate not applicable")
+        return None
+
+    logger.log(f"Checking target resource {uri} is on (pw cluster ls)...")
+    rc, out, err = _cmd([
+        "pw", "--platform-host", test.platform,
+        "cluster", "ls", uri, "-o", "json",
+    ], timeout=30)
+
+    if rc != 0:
+        logger.log(f"  WARNING: cluster lookup failed (rc={rc}): {(err or out)[:200]}")
+        logger.log("  → status indeterminate; launching anyway")
+        return None
+
+    rec = _find_cluster_record(out, uri)
+    if rec is None:
+        logger.log(f"  WARNING: resource {uri} not found in 'pw cluster ls' output")
+        logger.log("  → status indeterminate; launching anyway")
+        return None
+
+    status = _cluster_status_label(rec)
+    if status in CLUSTER_ON_STATES:
+        logger.log(f"  resource is ON (status={status}) — proceeding")
+        return None
+    if status in CLUSTER_OFF_STATES or status == "provisioning":
+        logger.log(f"  resource is NOT on (status={status}) — SKIPPING test")
+        return f"Resource {uri} is not on (status={status})"
+
+    logger.log(f"  WARNING: unrecognised resource status '{status or '∅'}' — launching anyway")
+    return None
 
 
 # ── Test discovery ────────────────────────────────────────────────────────────
@@ -596,9 +731,16 @@ def _run_session_test(
 
 # ── Top-level dispatcher ──────────────────────────────────────────────────────
 
+# Stale per-run artifacts removed before each run so a skipped/failed test does
+# not display leftover files restored from a previous (passing) run's bucket.
+_STALE_ARTIFACTS = ("launch.json", "view.json", "errors.txt", "session.json")
+
+
 def run_test(test: TestCase, output_base: Path) -> TestResult:
     out_dir = test.output_dir(output_base)
     out_dir.mkdir(parents=True, exist_ok=True)
+    for name in _STALE_ARTIFACTS:
+        (out_dir / name).unlink(missing_ok=True)
 
     result = TestResult(test=test, output_dir=out_dir)
     logger = RunLogger(out_dir / "run.log")
@@ -609,6 +751,8 @@ def run_test(test: TestCase, output_base: Path) -> TestResult:
         logger.section("TEST START")
         logger.log(f"Test:        {test.id}")
         logger.log(f"Kind:        {test.kind}")
+        logger.log(f"Platform:    {test.platform}")
+        logger.log(f"Workflow:    {test.workflow}")
         logger.log(f"Inputs:      {test.inputs_file}")
         logger.log(f"Output dir:  {out_dir}")
         logger.log(f"Started at:  {started_at}")
@@ -619,6 +763,15 @@ def run_test(test: TestCase, output_base: Path) -> TestResult:
             result.error = err
             result.duration = time.monotonic() - start
             logger.log(f"ERROR: {err}")
+            _write_result(result, started_at)
+            return result
+
+        logger.section("RESOURCE CHECK")
+        skip_reason = _resource_gate(test, logger)
+        if skip_reason:
+            result.status = "skipped"
+            result.error = skip_reason
+            result.duration = time.monotonic() - start
             _write_result(result, started_at)
             return result
 
@@ -643,12 +796,17 @@ def run_test(test: TestCase, output_base: Path) -> TestResult:
 # ── Reporting ─────────────────────────────────────────────────────────────────
 
 def _icon(status: str) -> str:
-    return "✓" if status == "completed" else "✗"
+    if status == "completed":
+        return "✓"
+    if status == "skipped":
+        return "⊘"
+    return "✗"
 
 
 def print_summary(results: list[TestResult], output_base: Path) -> bool:
-    passed = [r for r in results if r.status == "completed"]
-    failed = [r for r in results if r.status != "completed"]
+    passed  = [r for r in results if r.status == "completed"]
+    skipped = [r for r in results if r.status == "skipped"]
+    failed  = [r for r in results if r.status not in ("completed", "skipped")]
 
     COL = 62
     print()
@@ -668,13 +826,16 @@ def print_summary(results: list[TestResult], output_base: Path) -> bool:
         if r.error:
             print(f"         ! {r.error.splitlines()[0][:105]}")
         if r.output_dir:
-            rel = r.output_dir.relative_to(TESTS_DIR)
-            print(f"         → {rel}/")
+            print(f"         → {_rel(r.output_dir)}/")
 
     print("-" * 96)
-    print(f"  Total: {len(results)}  |  Passed: {len(passed)}  |  Failed: {len(failed)}")
-    print(f"  Output: {output_base.relative_to(TESTS_DIR)}/")
+    print(
+        f"  Total: {len(results)}  |  Passed: {len(passed)}  |  "
+        f"Failed: {len(failed)}  |  Skipped: {len(skipped)}"
+    )
+    print(f"  Output: {_rel(output_base)}/")
     print("=" * 96)
+    # Skipped tests (resource off) are not failures — the suite passes if nothing failed.
     return not failed
 
 
