@@ -30,6 +30,21 @@ on:
         required: false
         default: ''
         type: string
+      tests_repo:
+        description: 'Repository holding the test definitions'
+        required: false
+        default: 'https://github.com/parallelworks/workflow-tester-tool.git'
+        type: string
+      tests_branch:
+        description: 'Branch of the tests repository'
+        required: false
+        default: 'main'
+        type: string
+      tests_directory:
+        description: 'Directory within the tests repo (default: the platform host)'
+        required: false
+        default: '${PW_PLATFORM_HOST}'
+        type: string
       run_tests:
         description: 'Run workflow tests'
         required: false
@@ -71,6 +86,11 @@ jobs:
             "resource": "${{ inputs.resource }}",
             "bucket": "${{ inputs.bucket }}",
             "bucket_path": "${{ inputs.bucket_path }}",
+            "tests": {
+              "repo": "${{ inputs.tests_repo }}",
+              "branch": "${{ inputs.tests_branch }}",
+              "directory": "${{ inputs.tests_directory }}"
+            },
             "run_tests": ${{ inputs.run_tests }},
             "serve_dashboard": ${{ inputs.serve_dashboard }}
           }

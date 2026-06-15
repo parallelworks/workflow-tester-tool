@@ -32,7 +32,8 @@ workflow-tester-tool/
 
 ### Directory hierarchy
 
-Tests are plain JSON files in a five-level path:
+Tests are plain JSON files in a five-level path **relative to the test root**
+(`run_tests.py --tests-dir`, default: the script's directory):
 
 ```
 <platform>/<user>/<kind>/<workflow>/<test-name>.json
@@ -45,6 +46,26 @@ Tests are plain JSON files in a five-level path:
 | `kind` | `workflows` or `sessions` | Controls how the test is evaluated — see below |
 | `workflow` | `marketplace.script_submitter.latest` | Workflow slug from `pw workflows ls` |
 | `<test>.json` | `test1.json` | Any name; becomes the test's display name in the dashboard |
+
+### Tests in a separate repository
+
+The test tree does **not** have to live in this repo. The **Test Source** form
+inputs (`tests.repo` / `tests.branch` / `tests.directory`) let you point the run
+at any repository. The configured directory is sparse-checked-out and treated as
+the **platform root** — i.e. it holds the `<user>/<kind>/<workflow>/<test>.json`
+subtree, and the *platform* level is supplied by the run (the current
+`${PW_PLATFORM_HOST}`), not stored in the path.
+
+| Source | `tests.directory` | Layout inside the directory |
+|---|---|---|
+| This repo (default) | `${PW_PLATFORM_HOST}` → `activate.parallel.works` | `alvaro/sessions/marketplace.openvscode.latest/inputs.json` |
+| `interactive_session.git` @ `test-delete` | `test-delete/tests` | `alvaro/workflows/script_submitter/test1.json` |
+
+The `setup` job fetches the directory and normalises it into
+`${PW_PARENT_JOB_DIR}/tests/<platform>/<user>/<kind>/<workflow>/<test>.json`, then
+`run_tests.py --tests-dir ${PW_PARENT_JOB_DIR}/tests` runs it. The platform-keyed
+output tree is unchanged, so the dashboard groups results by platform exactly as
+before.
 
 ### Test kinds
 
@@ -139,7 +160,8 @@ python run_tests.py --dry-run
 
 | Flag | Default | Description |
 |---|---|---|
-| `--output-dir DIR` | `./output/` | Root for test output files |
+| `--tests-dir DIR` | script directory | Root of the test tree to discover |
+| `--output-dir DIR` | `<tests-dir>/output/` | Root for test output files |
 | `--workers N` | `10` | Max parallel test runners |
 | `--dry-run` | — | List discovered tests, do not execute |
 
@@ -152,8 +174,8 @@ python serve.py
 # Admin dashboard (enables Rerun / Cancel API)
 python serve.py --admin
 
-# Custom port and output directory
-python serve.py --port 9000 --output-dir /path/to/output
+# Custom port, output directory, and test tree
+python serve.py --port 9000 --output-dir /path/to/output --tests-dir /path/to/tests
 
 # Behind a reverse proxy at a fixed prefix
 PW_BASE_PATH=/me/session/alvaro/test python serve.py
@@ -164,6 +186,7 @@ PW_BASE_PATH=/me/session/alvaro/test python serve.py
 | `--host HOST` | `::` (dual-stack IPv6, or `0.0.0.0` if no IPv6) | Bind address |
 | `--port PORT` | `8080` | Bind port |
 | `--output-dir DIR` | `./output/` | Root directory of test outputs |
+| `--tests-dir DIR` | script directory | Root of the test tree (where `<test>.json` inputs live; used for the detail panel and admin rerun) |
 | `--prefix PREFIX` | `$PW_BASE_PATH` | URL prefix to strip (reverse proxy deployments) |
 | `--admin` | off | Enable admin API and serve `admin.html` as the root page |
 
@@ -214,7 +237,7 @@ output/
 
 ### `run_tests.py`
 
-- Discovers test JSON files with `discover_tests()` (glob over the five-level hierarchy)
+- Discovers test JSON files with `discover_tests()` (glob over the five-level hierarchy under `--tests-dir`, which defaults to the script directory)
 - Runs up to `--workers` tests concurrently via `ThreadPoolExecutor`
 - Resource gate (`_resource_gate()`) checks `pw cluster ls` before launch and reports `skipped` when the target resource is off
 - Two dispatchers: `_run_workflow_test()` and `_run_session_test()`
@@ -231,7 +254,8 @@ Tuning env vars (all optional): `PW_TEST_LAUNCH_RETRIES`, `PW_TEST_LAUNCH_BACKOF
 
 - `DualStackHTTPServer` (a `ThreadingHTTPServer`) backed by `DashboardHandler` (extends `SimpleHTTPRequestHandler`). Binds `::` with `IPV6_V6ONLY` disabled so the proxy reaches it over IPv4 **or** IPv6; falls back to `0.0.0.0` on hosts without IPv6. This avoids the `{"error":true,"message":"Proxy Error"}` seen when the proxy resolved the session hostname to IPv6 but the server only listened on IPv4.
 - `GET /api/results` — scans `output/` for `result.json` files and returns aggregated JSON
-- `GET /api/results/<test>/inputs` — returns the matching `<test>.json` inputs file
+- `GET /api/results/<test>/inputs` — returns the matching `<test>.json` inputs file from `--tests-dir`
+- `--tests-dir` tells the server where the `<test>.json` files live (the test tree, which may be a separate checkout from the tooling). The admin rerun (`/api/run-test`, `/api/run-all`) forwards `--tests-dir` and `--output-dir` to `run_tests.py` so reruns discover and write to the same trees the dashboard reads.
 - In `--admin` mode:
   - Serves `admin.html` as the root page instead of `index.html`
   - `POST /api/run-test` — spawns `run_tests.py --test-file` in a background thread
@@ -252,8 +276,8 @@ Six parallel jobs, all depending on `setup`:
 
 | Job | Purpose |
 |---|---|
-| `setup` | Checkout repo, allocate two ports, restore outputs from bucket |
-| `run_tests` | Run the full test suite, upload results to bucket |
+| `setup` | Checkout the tool, sparse-checkout the configured **test source** into `${PW_PARENT_JOB_DIR}/tests/<platform>/`, allocate two ports, restore outputs from bucket |
+| `run_tests` | Run the full test suite (`--tests-dir ${PW_PARENT_JOB_DIR}/tests`), upload results to bucket |
 | `serve` | Start `serve.py` (public, read-only) on `SESSION_PORT` |
 | `serve_admin` | Start `serve.py --admin` on `ADMIN_PORT` |
 | `create_session` | Register the public dashboard as an ACTIVATE session |
@@ -274,6 +298,9 @@ Six parallel jobs, all depending on `setup`:
 | `resource` | string | Resource URI |
 | `bucket` | string | Bucket URI |
 | `bucket_path` | string | Optional; leave blank for the default |
+| `tests_repo` | string | Tests repository (default: this tool's repo) |
+| `tests_branch` | string | Tests branch (default: `main`) |
+| `tests_directory` | string | Tests directory (default: `${PW_PLATFORM_HOST}`) |
 | `run_tests` | boolean | |
 | `serve_dashboard` | boolean | |
 

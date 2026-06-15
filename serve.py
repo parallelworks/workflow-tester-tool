@@ -47,6 +47,9 @@ _API_CANCEL   = "/api/cancel"
 class DashboardHandler(SimpleHTTPRequestHandler):
     web_dir: Path = TESTS_DIR / "web"
     output_dir: Path = TESTS_DIR / "output"
+    # Root of the test tree (<platform>/<user>/<kind>/<workflow>/<test>.json).
+    # May be a separate checkout from the tooling — defaults to this script's dir.
+    tests_dir: Path = TESTS_DIR
     url_prefix: str = ""
     admin_mode: bool = False
 
@@ -205,7 +208,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         })
 
     def _handle_inputs(self, test_path: str):
-        inputs_file = TESTS_DIR / (test_path + ".json")
+        inputs_file = self.tests_dir / (test_path + ".json")
         if not inputs_file.exists():
             self._json({"error": f"Inputs file not found: {test_path}"}, status=404)
             return
@@ -223,7 +226,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self._json({"error": "Missing 'test' field"}, status=400)
                 return
 
-            test_file = TESTS_DIR / (test + ".json")
+            test_file = self.tests_dir / (test + ".json")
             if not test_file.exists():
                 self._json({"error": f"Test file not found: {test}.json"}, status=404)
                 return
@@ -231,6 +234,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             def _run():
                 subprocess.run(
                     [sys.executable, "-u", str(TESTS_DIR / "run_tests.py"),
+                     "--tests-dir", str(self.tests_dir),
+                     "--output-dir", str(self.output_dir),
                      "--test-file", str(test_file)],
                     cwd=str(TESTS_DIR),
                 )
@@ -242,7 +247,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _handle_run_all(self):
         try:
-            cmd = [sys.executable, "-u", str(TESTS_DIR / "run_tests.py")]
+            cmd = [sys.executable, "-u", str(TESTS_DIR / "run_tests.py"),
+                   "--tests-dir", str(self.tests_dir),
+                   "--output-dir", str(self.output_dir)]
             platform = os.environ.get("PW_PLATFORM_HOST", "").strip()
             user = os.environ.get("PW_USER", "").strip()
             if platform:
@@ -362,6 +369,9 @@ Admin mode:
                          "or '0.0.0.0' when the host has no IPv6)")
     ap.add_argument("--port",       type=int, default=8080)
     ap.add_argument("--output-dir", default=str(TESTS_DIR / "output"))
+    ap.add_argument("--tests-dir",  default=None,
+                    help="Root of the test tree (where the <test>.json inputs "
+                         "files live). Default: this script's directory.")
     ap.add_argument(
         "--prefix",
         default=os.environ.get("PW_BASE_PATH", ""),
@@ -376,6 +386,9 @@ Admin mode:
     args = ap.parse_args()
 
     DashboardHandler.output_dir = Path(args.output_dir).resolve()
+    DashboardHandler.tests_dir = (
+        Path(args.tests_dir).resolve() if args.tests_dir else TESTS_DIR
+    )
     DashboardHandler.url_prefix = args.prefix.rstrip("/")
     DashboardHandler.admin_mode = args.admin
 
@@ -384,6 +397,7 @@ Admin mode:
     mode = "ADMIN" if args.admin else "public (read-only)"
     print(f"Workflow Test Dashboard: http://localhost:{args.port}/")
     print(f"  Output directory: {DashboardHandler.output_dir}")
+    print(f"  Tests directory:  {DashboardHandler.tests_dir}")
     print(f"  Mode:             {mode}")
     print(f"  Bind host:        {bind_host}")
     if args.prefix:

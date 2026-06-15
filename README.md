@@ -15,8 +15,19 @@ Open the **Workflow Status Monitor** from the ACTIVATE marketplace and fill in t
 | **Resource** | Where to run — your user workspace or any connected cluster. |
 | **Output Storage Bucket** | Cloud bucket where results are saved between runs. |
 | **Output Path in Bucket** | Path inside the bucket (default: `workflow-tester-tool/output`). |
+| **Test Source → Tests Repository** | Git repo holding the test definitions (default: this tool's repo). |
+| **Test Source → Tests Branch** | Branch to check out (default: `main`). |
+| **Test Source → Tests Directory** | Directory inside the repo holding `<user>/<kind>/<workflow>/<test>.json` (default: `${PW_PLATFORM_HOST}`, the current platform host). |
 | **Run Tests** | **Yes** to run the test suite. **No** to just view previously saved results. |
 | **Serve Dashboard** | **Yes** to open an interactive dashboard session in your browser. |
+
+> **Tests can live in a separate repository.** By default the tool runs the tests
+> bundled in this repo (under `activate.parallel.works/…`, `activate.hpc.mil/…`).
+> Point **Test Source** at any repo/branch/directory to run a test suite stored
+> elsewhere — e.g. `https://github.com/parallelworks/interactive_session.git`,
+> branch `test-delete`, directory `test-delete/tests`. Only that directory is
+> checked out (sparse), and its `<user>/<kind>/<workflow>/<test>.json` tree is run
+> against the current platform.
 
 Click **Execute**. The workflow will run the tests and open two browser sessions when ready.
 
@@ -75,6 +86,9 @@ A pre-built workflow is available under **Actions → Run PW Workflow**. Trigger
 | **Resource** | Resource URI, e.g. `pw://alvaro/user-workspace` |
 | **Bucket** | Bucket URI, e.g. `pw://alvaro/gcpbucket` |
 | **Bucket path** | Leave blank to use the default path |
+| **Tests repo** | Repository holding the tests (default: this tool's repo) |
+| **Tests branch** | Branch of the tests repo (default: `main`) |
+| **Tests directory** | Directory inside the tests repo (default: `${PW_PLATFORM_HOST}`) |
 | **Run tests** | Whether to execute the test suite |
 | **Serve dashboard** | Whether to open the interactive dashboard session |
 
