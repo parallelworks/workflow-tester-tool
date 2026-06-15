@@ -2,15 +2,18 @@
 """
 PW Workflow Testing Framework
 
-Test files live under:
+Test files live under a test root (--tests-dir; default: this script's directory):
   <platform>/<user>/workflows/<workflow>/<test-name>.json   → runs to completion
   <platform>/<user>/sessions/<workflow>/<test-name>.json    → starts a session; cancels when healthy
 
-Each JSON file contains the workflow inputs exactly as the pw CLI expects them.
-Outputs are written to a mirrored tree under --output-dir (default: ./output/).
+The test root can be a separate repository checked out by the workflow; pass its
+location with --tests-dir. Each JSON file contains the workflow inputs exactly as
+the pw CLI expects them. Outputs are written to a mirrored tree under --output-dir
+(default: <tests-dir>/output/).
 
 Usage:
   python run_tests.py                                              # run all tests
+  python run_tests.py --tests-dir /path/to/tests                  # tests from another tree
   python run_tests.py --platform activate.parallel.works          # filter by platform
   python run_tests.py --platform <p> --user <u>                   # filter by user
   python run_tests.py --platform <p> --user <u> --kind sessions   # only session tests
@@ -935,8 +938,12 @@ def main() -> None:
                     help="Filter by test kind: workflows or sessions")
     ap.add_argument("--workflow", help="Filter by workflow name")
     ap.add_argument("--test-file", metavar="PATH", help="Run a single test JSON file")
-    ap.add_argument("--output-dir", metavar="DIR", default=str(TESTS_DIR / "output"),
-                    help="Root directory for test output (default: ./output/)")
+    ap.add_argument("--tests-dir", metavar="DIR", default=None,
+                    help="Root directory of the test tree "
+                         "(<platform>/<user>/<kind>/<workflow>/<test>.json). "
+                         "Default: this script's directory.")
+    ap.add_argument("--output-dir", metavar="DIR", default=None,
+                    help="Root directory for test output (default: <tests-dir>/output/)")
     ap.add_argument("--workers", type=int, default=10,
                     help="Max parallel workers (default: 10)")
     ap.add_argument("--rerun-launch-failed", type=int, default=RERUN_ROUNDS,
@@ -947,7 +954,15 @@ def main() -> None:
                     help="Discover and list tests without executing them")
     args = ap.parse_args()
 
-    output_base = Path(args.output_dir).resolve()
+    # The test tree may live in a separate checkout; point discovery at it.
+    global TESTS_DIR
+    if args.tests_dir:
+        TESTS_DIR = Path(args.tests_dir).resolve()
+
+    output_base = (
+        Path(args.output_dir).resolve() if args.output_dir
+        else TESTS_DIR / "output"
+    )
 
     try:
         tests = discover_tests(

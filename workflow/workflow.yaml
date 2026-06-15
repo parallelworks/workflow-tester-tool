@@ -20,6 +20,49 @@ jobs:
         with:
           repo: https://github.com/parallelworks/workflow-tester-tool.git
           branch: main
+      - name: Checkout tests
+        run: |
+          set -x
+          cd ${PW_PARENT_JOB_DIR}
+
+          # The test definitions may live in a different repo/branch/directory
+          # than this tool (see the "Test Source" form inputs). Fetch only the
+          # configured directory (sparse checkout) and normalise it into
+          #   tests/<platform>/<user>/<kind>/<workflow>/<test>.json
+          # so run_tests.py / serve.py see the platform-keyed tree they expect.
+          REPO="${{ inputs.tests.repo }}"
+          BRANCH="${{ inputs.tests.branch }}"
+
+          # Directory within the repo holding the tests. Defaults to the literal
+          # ${PW_PLATFORM_HOST}, which the shell expands here to the live host.
+          DIR="${{ inputs.tests.directory }}"
+          DIR="${DIR#https://}"; DIR="${DIR#http://}"; DIR="${DIR%/}"
+
+          # Platform host the dashboard groups results under (scheme-stripped).
+          PLATFORM="${PW_PLATFORM_HOST#https://}"; PLATFORM="${PLATFORM#http://}"
+          PLATFORM="${PLATFORM%%/*}"
+          DIR="${DIR:-$PLATFORM}"
+
+          echo "::notice::Fetching tests from ${REPO}@${BRANCH} (dir: ${DIR})"
+
+          rm -rf tests-src tests
+          # Blobless, sparse clone: only the configured directory is materialised,
+          # and Git-LFS blobs (e.g. interactive_session/downloads) are never pulled.
+          export GIT_LFS_SKIP_SMUDGE=1
+          git clone -q --no-checkout --depth 1 --filter=blob:none \
+            --branch "${BRANCH}" "${REPO}" tests-src
+          ( cd tests-src
+            git sparse-checkout init --no-cone
+            git sparse-checkout set "${DIR}"
+            git checkout -q )
+
+          mkdir -p "tests/${PLATFORM}"
+          if [ -d "tests-src/${DIR}" ]; then
+            cp -a "tests-src/${DIR}/." "tests/${PLATFORM}/"
+            echo "::notice::Tests staged under tests/${PLATFORM}"
+          else
+            echo "::warning::Directory '${DIR}' not found in ${REPO}@${BRANCH} — no tests to run"
+          fi
       - name: Get Session Ports
         if: ${{ inputs.serve_dashboard }}
         run: |
@@ -61,6 +104,7 @@ jobs:
           python3 -u run_tests.py \
             --platform "${PW_PLATFORM_HOST}" \
             --user "${PW_USER}" \
+            --tests-dir "${PW_PARENT_JOB_DIR}/tests" \
             --output-dir "${PW_PARENT_JOB_DIR}/output" \
             || echo "::warning::run_tests.py exited non-zero — see the dashboard for failing tests"
       - name: Transfer outputs to bucket
@@ -80,6 +124,7 @@ jobs:
           export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.dashboard }}
           python3 serve.py \
             --port ${{ needs.setup.outputs.SESSION_PORT }} \
+            --tests-dir ${PW_PARENT_JOB_DIR}/tests \
             --output-dir ${PW_PARENT_JOB_DIR}/output &
           echo $! > ${PW_PARENT_JOB_DIR}/service.pid
           sleep inf
@@ -99,6 +144,7 @@ jobs:
           export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.admin }}
           python3 serve.py \
             --port ${{ needs.setup.outputs.ADMIN_PORT }} \
+            --tests-dir ${PW_PARENT_JOB_DIR}/tests \
             --output-dir ${PW_PARENT_JOB_DIR}/output \
             --admin &
           echo $! > ${PW_PARENT_JOB_DIR}/admin.pid
@@ -160,6 +206,34 @@ jobs:
         tooltip: |
           Full path to the output directory inside the bucket.
           Results are saved as path/platform/user/...
+      tests:
+        type: group
+        label: Test Source
+        tooltip: |
+          Where the test definitions live. Tests can be stored in a repository
+          separate from this tool.
+        items:
+          repo:
+            type: string
+            label: Tests Repository
+            default: https://github.com/parallelworks/workflow-tester-tool.git
+            tooltip: |
+              Git repository holding the test definitions.
+          branch:
+            type: string
+            label: Tests Branch
+            default: main
+            tooltip: |
+              Branch to check out from the tests repository.
+          directory:
+            type: string
+            label: Tests Directory
+            default: ${PW_PLATFORM_HOST}
+            tooltip: |
+              Directory within the repository that holds the test tree
+              (<user>/<kind>/<workflow>/<test>.json). Defaults to the current
+              platform host (e.g. activate.parallel.works), which is how this
+              tool's own tests are organised.
       run_tests:
         type: boolean
         label: Run Tests
