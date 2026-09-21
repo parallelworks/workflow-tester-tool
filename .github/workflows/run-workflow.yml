@@ -101,9 +101,9 @@ jobs:
               "filter": "${{ inputs.filter }}",
               "results": {"path": "${{ inputs.bucket_path }}"},
               "schedule": {"interval_hours": int("${{ inputs.interval_hours }}" or 0)},
-              "run_tests": ${{ inputs.run_tests }},
-              "serve_dashboard": ${{ inputs.serve_dashboard }},
-              "admin_dashboard": ${{ inputs.serve_dashboard }},
+              "run_tests": "${{ inputs.run_tests }}" == "true",
+              "serve_dashboard": "${{ inputs.serve_dashboard }}" == "true",
+              "admin_dashboard": "${{ inputs.serve_dashboard }}" == "true",
           }
           if bucket:
               inputs["results"]["bucket"] = bucket
