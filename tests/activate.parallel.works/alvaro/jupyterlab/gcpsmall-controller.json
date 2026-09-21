@@ -1,4 +1,5 @@
 {
+  "name": "gcpsmall-controller",
   "platform": "activate.parallel.works",
   "user": "alvaro",
   "workflow_name": "jupyterlab",
@@ -7,12 +8,17 @@
     "path": "workflows/jupyterlab/yamls/general.yaml",
     "ref": "canary"
   },
-  "kind": "endpoint",
   "timeout_s": 1800,
   "warm_marker": "${HOME}/pw/software/.miniconda3c",
-  "leftover_patterns": ["jupyter-lab", "pw endpoints run"],
+  "leftover_patterns": [
+    "jupyter-lab",
+    "pw endpoints run"
+  ],
   "inputs": {
-    "cluster": { "resource": "pw://alvaro/gcpsmall", "scheduler": false },
+    "cluster": {
+      "resource": "pw://alvaro/gcpsmall",
+      "scheduler": false
+    },
     "service": {
       "notebook_dir": "${HOME}",
       "conda_install": true,

@@ -54,6 +54,7 @@ class RunnerTests(RunnerCase):
         self.assertTrue(record["suite_run"].startswith("probe-"))
         self.assertEqual(set(outcome), {"status", "failed_at", "error", "phase", "http", "cleanup", "run_slug",
                                         "endpoint", "started_at", "ended_at", "duration_s"})
+        self.assertEqual(record["test"], {"id": CONTROLLER, "workflow_name": "webshell"})
         # artifacts
         dirs = self.artifact_dirs(CONTROLLER)
         self.assertEqual(dirs, [artifact_dir_name(outcome["started_at"], outcome["run_slug"])])
@@ -71,9 +72,9 @@ class RunnerTests(RunnerCase):
         self.assertIn("--name probe: " + CONTROLLER, launches[0])
         self.assertIn("PASS", out)
 
-    def test_batch_pass_has_null_endpoint_fields(self):
+    def test_run_without_endpoints_has_null_endpoint_fields(self):
         self.write_test("script_submitter/gcpsmall-controller.json",
-                        definition(kind="batch", workflow_name="script_submitter",
+                        definition(workflow_name="script_submitter",
                                    path="workflows/script_submitter/v3.6/general.yaml"))
         code, out = self.run_suite()
         self.assertEqual(code, 0, out)

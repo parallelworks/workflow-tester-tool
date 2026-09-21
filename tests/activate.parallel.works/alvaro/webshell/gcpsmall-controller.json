@@ -1,4 +1,5 @@
 {
+  "name": "gcpsmall-controller",
   "platform": "activate.parallel.works",
   "user": "alvaro",
   "workflow_name": "webshell",
@@ -7,12 +8,17 @@
     "path": "workflows/webshell/yamls/general.yaml",
     "ref": "canary"
   },
-  "kind": "endpoint",
   "timeout_s": 1200,
   "warm_marker": "${HOME}/pw/software/noVNC-1.3.0/ttyd.x86_64",
-  "leftover_patterns": ["ttyd", "pw endpoints run"],
+  "leftover_patterns": [
+    "ttyd",
+    "pw endpoints run"
+  ],
   "inputs": {
-    "cluster": { "resource": "pw://alvaro/gcpsmall", "scheduler": false },
+    "cluster": {
+      "resource": "pw://alvaro/gcpsmall",
+      "scheduler": false
+    },
     "service": {}
   }
 }

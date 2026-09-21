@@ -8,7 +8,7 @@ record.
 
 | | |
 |---|---|
-| Test definitions | `tests/<platform>/<user>/<workflow_name>/<test>.json` in this repository, or the same layout in any git repository given to the workflow |
+| Test definitions | One JSON file per test under `tests/` in this repository, or under any directory of any git repository given to the workflow. Recommended location: `<platform>/<user>/<workflow_name>/<name>.json` |
 | Results | `<bucket>/<path>/<platform>/<user>/<workflow_name>/<test>/`: `records.jsonl` plus one directory of artifacts per execution. The bucket is the ground truth; each test's results are uploaded as soon as it finishes |
 | Running tests | The admin dashboard (`Run all`, `Rerun test`) or `python3 -m probe run` |
 | Code | `probe/` runner and dashboard server (Python 3.8+, standard library only), `web/` dashboard, `workflow/workflow.yaml` deployment |
@@ -61,12 +61,14 @@ records them as failed.
 ## Test definitions
 
 One self-contained JSON file per test. The test id is
-`<platform>/<user>/<workflow_name>/<file name without .json>`, built from the file's
-fields and name, not from its location. Two files with the same id are an error, as is
-any unknown key.
+`<platform>/<user>/<workflow_name>/<name>`, built from the file's fields alone; where
+the file sits does not matter. The recommended location is
+`<platform>/<user>/<workflow_name>/<name>.json`, and `python3 -m probe list` notes files
+found elsewhere. Two files with the same id are an error, as is any unknown key.
 
 ```json
 {
+  "name": "gcpsmall-controller",
   "platform": "activate.parallel.works",
   "user": "alvaro",
   "workflow_name": "webshell",
@@ -75,7 +77,6 @@ any unknown key.
     "path": "workflows/webshell/yamls/general.yaml",
     "ref": "canary"
   },
-  "kind": "endpoint",
   "timeout_s": 1200,
   "warm_marker": "${HOME}/pw/software/noVNC-1.3.0/ttyd.x86_64",
   "leftover_patterns": ["ttyd", "pw endpoints run"],
@@ -88,19 +89,21 @@ any unknown key.
 
 | Field | Meaning |
 |---|---|
+| `name` | Test name, unique within its platform, user and workflow. |
 | `platform`, `user` | Platform host and user that run the test. |
 | `workflow_name` | Groups the tests of one workflow, for example its directory name. |
 | `workflow.repo`, `workflow.path` | Repository (host and path, or a full git URL) and path of the workflow YAML. |
 | `workflow.ref` | Branch, tag or commit. A branch follows development (canary test); a tag or commit pins a release. |
-| `kind` | `batch`: pass when the run completes. `endpoint`: pass when the run completes; the endpoints named `*-<run slug>` are deleted afterwards. |
 | `timeout_s` | Seconds to wait for the verdict, default 1800. On timeout the run is canceled and the test fails. |
 | `inputs` | Passed verbatim to `pw workflows run -i`. |
-| `http_expect` | Optional, endpoint tests. HTTP status code, or list of codes, the endpoint URL must answer with before it is deleted. Off by default: the workflow already checks its endpoint before completing. |
+| `http_expect` | Optional. HTTP status code, or list of codes, the run's endpoint must answer with before it is deleted; a run that registered no endpoint then fails. Off by default: the workflow already checks its endpoint before completing. |
 | `warm_marker` | Optional. Path, or list of paths, on the target system. All present before launch: phase `warm`; none: `cold`; some: `partial`. |
 | `leftover_patterns` | Optional. Process command-line patterns that must be gone from the target system after cleanup; compute tests also require an empty scheduler queue. Processes that existed before the launch are ignored. |
 
-The verdict is the run status: a workflow fails its run when its service is not
-healthy and completes once it is. Before launching, PROBE checks the target with
+Every test is judged the same way: it passes when its run completes. A workflow fails
+its run when its service is not healthy and completes once it is. After the verdict
+PROBE deletes every endpoint named `*-<run slug>`; a workflow that registers none has
+nothing to delete. Before launching, PROBE checks the target with
 `pw cluster ls` (or `pw kube ls`); a resource that is off or not listed skips the test.
 The target comes from `inputs.resource` or `inputs.cluster.resource` as a name, a
 `pw://user/name` URI or a resource object; `scheduler: true` marks a compute-node test.
@@ -131,7 +134,7 @@ runners writing the same `records.jsonl` would overwrite each other.
   "schema": 1,
   "suite_run": "probe-2026-09-21T15:09Z",
   "pw_cli": "v7.99.0",
-  "test": {"id": "activate.parallel.works/alvaro/webshell/gcpsmall-compute", "workflow_name": "webshell", "kind": "endpoint"},
+  "test": {"id": "activate.parallel.works/alvaro/webshell/gcpsmall-compute", "workflow_name": "webshell"},
   "workflow": {"repo": "github.com/parallelworks/workflows", "path": "workflows/webshell/yamls/general.yaml",
                "ref": "canary", "commit": "031eb00c31c1af10de5868c78865e3000004e583"},
   "target": {"platform": "activate.parallel.works", "user": "alvaro", "system": "gcpsmall",
@@ -154,7 +157,7 @@ runners writing the same `records.jsonl` would overwrite each other.
 | `outcome.http` | Status code seen by `http_expect`, else null. |
 | `outcome.cleanup` | `ok`, `leftover`, `unknown` (the check could not run), `kept` (`--keep`). Independent of `status`. |
 | `outcome.run_slug` | Platform handle: `pw workflows runs view <slug>`. |
-| `outcome.endpoint` | Endpoint names deleted after the verdict, comma separated; null for batch tests. |
+| `outcome.endpoint` | Endpoint names deleted after the verdict, comma separated; null when the run registered none. |
 | `outcome.duration_s` | Test start to verdict, excluding cleanup. |
 
 Every key is always present; not applicable or unknown is null. A regression is a

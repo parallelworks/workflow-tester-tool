@@ -15,7 +15,7 @@ TEST_ID = "activate.parallel.works/alvaro/webshell/gcpsmall-controller"
 def record(status, started, slug="mock-abc", suite="probe-1", failed_at=None, error=None):
     return {
         "schema": 1, "suite_run": suite, "pw_cli": "v7.99.0",
-        "test": {"id": TEST_ID, "workflow_name": "webshell", "kind": "endpoint"},
+        "test": {"id": TEST_ID, "workflow_name": "webshell"},
         "workflow": {"repo": "github.com/parallelworks/workflows", "path": "workflows/webshell/yamls/general.yaml",
                      "ref": "canary", "commit": "0" * 40},
         "target": {"platform": "activate.parallel.works", "user": "alvaro", "system": "gcpsmall",
@@ -153,7 +153,7 @@ class ServerTests(ProbeCase):
         self.assertEqual(len(json.loads(body)["records"]), 2)
         status, body, _ = self.get("/api/tests/%s/definition" % TEST_ID)
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["definition"]["kind"], "endpoint")
+        self.assertEqual(json.loads(body)["definition"]["workflow_name"], "webshell")
         status, body, _ = self.get("/api/tests/%s/artifacts" % TEST_ID)
         listing = json.loads(body)["artifacts"]
         self.assertEqual(listing[0]["name"], "2026-09-19T060000Z_b")

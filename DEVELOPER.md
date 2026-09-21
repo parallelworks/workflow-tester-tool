@@ -4,7 +4,7 @@
 
 ```
 probe/__main__.py     command line: run, serve, list
-probe/definitions.py  test definition files: validation, ids, target derivation
+probe/definitions.py  test definition files: validation, ids (from the fields, not the path), target derivation
 probe/pw.py           pw CLI wrapper, git checkout of workflow YAMLs
 probe/runner.py       one run of the suite: gate, launch, poll, verdict, cleanup, record, bucket sync
 probe/results.py      results tree: records.jsonl, artifact directories, state and history
@@ -53,7 +53,8 @@ including path safety and the read-only refusal of admin actions. About a minute
 7. Endpoints named `*-<slug>` are listed; `http_expect` probes the first one with the
    run's `PW_API_KEY` (anonymous requests only see the login redirect).
 8. Teardown: `pw endpoints delete` for each, wait until they disappear, then the
-   `leftover_patterns` check over `pw ssh`, retried for two minutes.
+   `leftover_patterns` check over `pw ssh`, retried for two minutes. A run that
+   registered no endpoint has nothing to delete; every test is treated the same.
 9. Append the record, then upload the artifact directory and `records.jsonl` to the
    bucket (`--bucket`), records last so the bucket never has a record without its
    artifacts. A failed upload is reported and makes the runner exit 2.
@@ -121,8 +122,9 @@ this code, so a development branch is tested by pointing `code.branch` at it.
 
 ## Adding tests
 
-Copy a file from `tests/`, change the target and inputs, and check it with
-`python3 -m probe list --tests tests`. The inputs are the form payload of the workflow;
+Copy a file from `tests/`, give it a new `name`, change the target and inputs, and check
+it with `python3 -m probe list --tests tests`, which also notes files that are not at
+`<platform>/<user>/<workflow_name>/<name>.json`. The inputs are the form payload of the workflow;
 the recorded tests under `workflows/<name>/tests/<variant>/` in the workflows
 repository are a good source. Keep `timeout_s` above the cold-install time of the
 workflow on that system. A `script_submitter` test needs `define_cleanup_script: false`

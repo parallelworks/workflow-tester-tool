@@ -1,4 +1,5 @@
 {
+  "name": "gcpsmall-controller",
   "platform": "activate.parallel.works",
   "user": "alvaro",
   "workflow_name": "script_submitter",
@@ -7,7 +8,6 @@
     "path": "workflows/script_submitter/v3.6/general.yaml",
     "ref": "canary"
   },
-  "kind": "batch",
   "timeout_s": 900,
   "inputs": {
     "resource": "pw://alvaro/gcpsmall",

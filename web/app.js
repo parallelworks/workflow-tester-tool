@@ -23,7 +23,7 @@ const state = {
 const el = {};
 for (const id of [
   "top-meta", "run-all", "refresh", "theme", "notice", "f-platform", "f-user", "f-system", "f-workflow",
-  "f-kind", "f-status", "f-search", "f-changes", "f-clear", "t-tests", "t-pass", "t-fail", "t-skip",
+  "f-status", "f-search", "f-changes", "f-clear", "t-tests", "t-pass", "t-fail", "t-skip",
   "t-regressions", "t-last", "t-last-detail", "tile-fail", "tile-regressions", "matrix", "table-count",
   "tests-body", "suites-body", "drawer", "drawer-backdrop", "d-workflow", "d-title", "d-chips", "d-close",
   "d-admin", "d-rerun", "d-cancel", "d-admin-msg", "d-error", "d-facts", "d-history", "d-artifact", "d-file",
@@ -119,7 +119,6 @@ function readFilters() {
     user: params.get("user") || "",
     system: params.get("system") || "",
     workflow: params.get("workflow") || "",
-    kind: params.get("kind") || "",
     status: params.get("status") || "",
     search: params.get("q") || "",
     changes: params.get("changes") === "1",
@@ -130,7 +129,7 @@ function readFilters() {
 function writeFilters() {
   const f = state.filters;
   const params = new URLSearchParams();
-  for (const [key, value] of Object.entries({ platform: f.platform, user: f.user, system: f.system, workflow: f.workflow, kind: f.kind, status: f.status, q: f.search })) {
+  for (const [key, value] of Object.entries({ platform: f.platform, user: f.user, system: f.system, workflow: f.workflow, status: f.status, q: f.search })) {
     if (value) params.set(key, value);
   }
   if (f.changes) params.set("changes", "1");
@@ -144,7 +143,6 @@ function readFilterControls() {
   state.filters.user = el["f-user"].value;
   state.filters.system = el["f-system"].value;
   state.filters.workflow = el["f-workflow"].value;
-  state.filters.kind = el["f-kind"].value;
   state.filters.status = el["f-status"].value;
   state.filters.search = el["f-search"].value.trim();
   state.filters.changes = el["f-changes"].checked;
@@ -161,13 +159,12 @@ function matches(test) {
   if (f.user && test.user !== f.user) return false;
   if (f.system && systemKey(test) !== f.system) return false;
   if (f.workflow && test.workflow_name !== f.workflow) return false;
-  if (f.kind && (test.kind || "") !== f.kind) return false;
   if (f.status && status !== f.status) return false;
   if (f.changes && !test.change) return false;
   if (f.search) {
     const o = (test.current && test.current.outcome) || {};
     const w = (test.current && test.current.workflow) || {};
-    const hay = [test.id, test.system, test.node, test.kind, o.run_slug, o.error, o.endpoint, w.commit, w.ref]
+    const hay = [test.id, test.system, test.node, o.run_slug, o.error, o.endpoint, w.commit, w.ref]
       .filter(Boolean).join(" ").toLowerCase();
     if (!hay.includes(f.search.toLowerCase())) return false;
   }
@@ -182,7 +179,6 @@ function renderFilters(tests) {
   setOptions(el["f-user"], uniq(tests.map((t) => t.user)).sort(), f.user);
   setOptions(el["f-system"], uniq(tests.map(systemKey)).sort(), f.system);
   setOptions(el["f-workflow"], uniq(tests.map((t) => t.workflow_name)).sort(), f.workflow);
-  setOptions(el["f-kind"], uniq(tests.map((t) => t.kind || "")).filter(Boolean).sort(), f.kind);
   setOptions(el["f-status"], ["pass", "fail", "skip", "running", "none"].filter((s) => tests.some((t) => statusOf(t) === s)), f.status,
     (s) => STATUS[s].label);
   el["f-search"].value = f.search;
@@ -238,7 +234,7 @@ function renderMatrix(tests) {
 
 function renderTable(tests) {
   el["table-count"].textContent = `${tests.length} test${tests.length === 1 ? "" : "s"}`;
-  if (!tests.length) { el["tests-body"].innerHTML = `<tr><td colspan="9" class="empty">No tests match the filters.</td></tr>`; return; }
+  if (!tests.length) { el["tests-body"].innerHTML = `<tr><td colspan="8" class="empty">No tests match the filters.</td></tr>`; return; }
   const order = { fail: 0, running: 1, pass: 2, skip: 3, none: 4 };
   const sorted = [...tests].sort((a, b) => (order[statusOf(a)] - order[statusOf(b)]) || a.id.localeCompare(b.id));
   el["tests-body"].innerHTML = sorted.map((t) => {
@@ -250,7 +246,6 @@ function renderTable(tests) {
       <td><div><strong>${esc(t.workflow_name)}</strong> <span class="muted">/ ${esc(t.test)}</span></div><div class="muted small">${esc(t.platform)} · ${esc(t.user)}</div></td>
       <td>${esc(t.system || "–")}</td>
       <td>${esc(t.node || (t.type === "kubernetes" ? "kubernetes" : "–"))}</td>
-      <td>${esc(t.kind || "–")}</td>
       <td>${historyStrip(t.history)}</td>
       <td class="num">${fmtDuration(o.duration_s)}</td>
       <td title="${esc(o.started_at || "")}">${o.started_at ? relTime(o.started_at) : "–"}</td>
@@ -307,7 +302,7 @@ async function load() {
   } catch (error) {
     document.body.classList.add("is-stale");
     notice(`Could not load results: ${error.message}. Showing the last data received.`, "error");
-    if (!state.data) el["tests-body"].innerHTML = `<tr><td colspan="9" class="empty">No data.</td></tr>`;
+    if (!state.data) el["tests-body"].innerHTML = `<tr><td colspan="8" class="empty">No data.</td></tr>`;
   } finally {
     schedule();
   }
@@ -334,7 +329,6 @@ function fillDrawerHeader(test) {
   el["d-workflow"].textContent = `${test.platform} · ${test.user} · ${test.workflow_name}`;
   el["d-title"].textContent = test.test;
   el["d-chips"].innerHTML = chip(s) + changeChip(test.change) +
-    (test.kind ? `<span class="chip chip-plain">${esc(test.kind)}</span>` : "") +
     (o.cleanup ? `<span class="chip chip-plain${o.cleanup === "leftover" ? " chip-warn" : ""}">cleanup ${esc(o.cleanup)}</span>` : "");
   const failedAt = o.failed_at ? ` (at ${o.failed_at})` : "";
   el["d-error"].hidden = !o.error;
@@ -535,13 +529,13 @@ function onFilterChange() {
   renderAll();
 }
 
-for (const id of ["f-platform", "f-user", "f-system", "f-workflow", "f-kind", "f-status", "f-changes"]) {
+for (const id of ["f-platform", "f-user", "f-system", "f-workflow", "f-status", "f-changes"]) {
   el[id].addEventListener("change", onFilterChange);
 }
 let searchTimer = null;
 el["f-search"].addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(onFilterChange, 150); });
 el["f-clear"].addEventListener("click", () => {
-  state.filters = { platform: "", user: "", system: "", workflow: "", kind: "", status: "", search: "", changes: false, test: "" };
+  state.filters = { platform: "", user: "", system: "", workflow: "", status: "", search: "", changes: false, test: "" };
   writeFilters();
   renderAll();
 });

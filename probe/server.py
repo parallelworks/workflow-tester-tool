@@ -83,19 +83,12 @@ def build_state(cfg: Config) -> dict:
         current_state = state(test_id, records, running)
         definition = defined.get(test_id)
         current = current_state["current"]
-        if current:
-            target = dict(current.get("target") or {})
-            kind = (current.get("test") or {}).get("kind")
-        else:
-            target, kind = {}, None
-        if definition is not None:
-            kind = definition.kind
-            if not current:
-                t = definition.target
-                target = {"system": t.system, "resource": t.resource, "type": t.type, "node": t.node}
+        target = dict(current.get("target") or {}) if current else {}
+        if definition is not None and not current:
+            t = definition.target
+            target = {"system": t.system, "resource": t.resource, "type": t.type, "node": t.node}
         item = dict(id_parts(test_id))
         item.update({
-            "kind": kind,
             "system": target.get("system"),
             "node": target.get("node"),
             "type": target.get("type"),

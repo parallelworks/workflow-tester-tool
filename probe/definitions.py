@@ -1,4 +1,5 @@
-"""Test definitions: one self-contained JSON file per test."""
+"""Test definitions: one self-contained JSON file per test. The test id comes
+from the file's fields (platform, user, workflow_name, name), never from its path."""
 from __future__ import annotations
 
 import fnmatch
@@ -8,11 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-KINDS = ("batch", "endpoint")
 DEFAULT_TIMEOUT_S = 1800
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 KNOWN_KEYS = {
-    "platform", "user", "workflow_name", "workflow", "kind", "timeout_s", "inputs",
+    "name", "platform", "user", "workflow_name", "workflow", "timeout_s", "inputs",
     "http_expect", "warm_marker", "leftover_patterns",
 }
 WORKFLOW_KEYS = {"repo", "path", "ref"}
@@ -85,7 +85,6 @@ class TestDef:
     workflow_name: str
     name: str
     workflow: dict
-    kind: str
     timeout_s: int
     inputs: dict
     http_expect: Optional[List[int]]
@@ -95,6 +94,11 @@ class TestDef:
     @property
     def id(self) -> str:
         return "%s/%s/%s/%s" % (self.platform, self.user, self.workflow_name, self.name)
+
+    @property
+    def recommended_path(self) -> str:
+        """Where the file is expected to be, relative to the tests directory."""
+        return self.id + ".json"
 
     @property
     def launch_target(self) -> str:
@@ -132,9 +136,8 @@ def load_definition(path: Path) -> TestDef:
     unknown = sorted(set(data) - KNOWN_KEYS)
     if unknown:
         raise DefinitionError("unknown key(s): %s" % ", ".join(unknown))
-    if not SAFE_NAME_RE.match(path.stem):
-        raise DefinitionError("the file name may only contain letters, digits, '.', '_' and '-'")
 
+    name = _require_str(data, "name", path_like=True)
     platform = _require_str(data, "platform", path_like=True)
     user = _require_str(data, "user", path_like=True)
     workflow_name = _require_str(data, "workflow_name", path_like=True)
@@ -146,10 +149,6 @@ def load_definition(path: Path) -> TestDef:
         _require_str(workflow, key)
     if "@" in workflow["repo"] and not workflow["repo"].startswith("git@"):
         raise DefinitionError("'workflow.repo' must not carry an @ref; put the ref in 'workflow.ref'")
-
-    kind = _require_str(data, "kind")
-    if kind not in KINDS:
-        raise DefinitionError("'kind' must be one of %s" % ", ".join(KINDS))
 
     timeout_s = data.get("timeout_s", DEFAULT_TIMEOUT_S)
     if isinstance(timeout_s, bool) or not isinstance(timeout_s, int) or timeout_s <= 0:
@@ -167,8 +166,6 @@ def load_definition(path: Path) -> TestDef:
                 or not all(isinstance(c, int) and not isinstance(c, bool) and 100 <= c <= 599
                            for c in http_expect)):
             raise DefinitionError("'http_expect' must be an HTTP status code or a list of codes")
-        if kind != "endpoint":
-            raise DefinitionError("'http_expect' applies to endpoint tests only")
 
     warm_marker = data.get("warm_marker", [])
     if isinstance(warm_marker, str):
@@ -182,8 +179,8 @@ def load_definition(path: Path) -> TestDef:
         raise DefinitionError("'leftover_patterns' must be a list of process patterns")
 
     return TestDef(
-        path=path, platform=platform, user=user, workflow_name=workflow_name, name=path.stem,
-        workflow={k: workflow[k].strip() for k in WORKFLOW_KEYS}, kind=kind, timeout_s=timeout_s,
+        path=path, platform=platform, user=user, workflow_name=workflow_name, name=name,
+        workflow={k: workflow[k].strip() for k in WORKFLOW_KEYS}, timeout_s=timeout_s,
         inputs=inputs, http_expect=http_expect, warm_marker=[m.strip() for m in warm_marker],
         leftover_patterns=[p.strip() for p in leftover_patterns],
     )
@@ -209,6 +206,17 @@ def load_tests(root: Path) -> Tuple[List[TestDef], List[str]]:
         errors.append("duplicate test id %s: %s" % (tid, ", ".join(_rel(t.path, root) for t in group)))
     tests = [t for t in tests if t.id not in duplicates]
     return tests, errors
+
+
+def location_notes(tests: List[TestDef], root: Path) -> List[str]:
+    """One line per test whose file is not at the recommended location
+    <platform>/<user>/<workflow_name>/<name>.json. Informational only."""
+    notes = []
+    for test in tests:
+        actual = _rel(test.path, root).replace("\\", "/")
+        if actual != test.recommended_path:
+            notes.append("%s defines %s; the recommended location is %s" % (actual, test.id, test.recommended_path))
+    return notes
 
 
 def _rel(path: Path, root: Path) -> str:

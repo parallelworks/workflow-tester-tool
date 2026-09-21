@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .definitions import load_tests
+from .definitions import load_tests, location_notes
 from .runner import Options, clean_host, run_suite
 from .server import WEB_DIR, Config, serve
 
@@ -83,9 +83,11 @@ def main(argv=None) -> int:
             if args.user and test.user != args.user:
                 continue
             target = test.target
-            print("%s\n    %s  kind=%s  timeout=%ss  resource=%s  node=%s" % (
-                test.id, test.launch_target, test.kind, test.timeout_s,
+            print("%s\n    %s  timeout=%ss  resource=%s  node=%s" % (
+                test.id, test.launch_target, test.timeout_s,
                 target.resource or "-", target.node or target.type or "-"))
+        for note in location_notes(tests, Path(args.tests)):
+            print("note: %s" % note, file=sys.stderr)
         for error in errors:
             print("error: %s" % error, file=sys.stderr)
         return 2 if errors else 0

@@ -473,8 +473,11 @@ class TestRun:
     # -- endpoints ---------------------------------------------------------
 
     def find_endpoints(self) -> List[Endpoint]:
+        """Endpoints the run registered: every name ending in -<slug>. A run that
+        completed has already seen its endpoint listed, so one listing is enough
+        unless http_expect needs it."""
         suffix = "-%s" % self.slug
-        expect_some = self.test.kind == "endpoint" and self.outcome["status"] == "pass"
+        expect_some = self.test.http_expect is not None and self.outcome["status"] == "pass"
         attempts = ENDPOINT_LIST_ATTEMPTS if expect_some else 1
         for attempt in range(1, attempts + 1):
             try:
@@ -594,7 +597,7 @@ class TestRun:
             "schema": SCHEMA,
             "suite_run": self.suite.suite_run,
             "pw_cli": self.suite.pw_cli,
-            "test": {"id": self.test.id, "workflow_name": self.test.workflow_name, "kind": self.test.kind},
+            "test": {"id": self.test.id, "workflow_name": self.test.workflow_name},
             "workflow": {"repo": self.test.workflow["repo"], "path": self.test.workflow["path"],
                          "ref": self.test.workflow["ref"], "commit": self.commit},
             "target": {"platform": self.test.platform, "user": self.test.user,

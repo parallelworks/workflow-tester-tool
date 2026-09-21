@@ -1,6 +1,7 @@
+import json
 import unittest
 
-from probe.definitions import DefinitionError, derive_target, load_definition
+from probe.definitions import DefinitionError, derive_target, load_definition, location_notes
 from probe.definitions import load_tests as load_definitions
 from selftest.helpers import ProbeCase, definition
 
@@ -27,7 +28,8 @@ class DefinitionTests(ProbeCase):
     def test_rejects_missing_and_bad_fields(self):
         cases = [
             ({"platform": None}, "'platform'"),
-            ({"kind": "session"}, "'kind'"),
+            ({"name": None}, "'name'"),
+            ({"name": "a b"}, "'name'"),
             ({"timeout_s": "10"}, "'timeout_s'"),
             ({"timeout_s": 0}, "'timeout_s'"),
             ({"inputs": []}, "'inputs'"),
@@ -35,7 +37,6 @@ class DefinitionTests(ProbeCase):
             ({"workflow": {"repo": "github.com/a/b@main", "path": "y", "ref": "main"}}, "@ref"),
             ({"extra": 1}, "unknown key"),
             ({"http_expect": "200"}, "'http_expect'"),
-            ({"http_expect": [200], "kind": "batch"}, "endpoint tests only"),
             ({"leftover_patterns": "ttyd"}, "'leftover_patterns'"),
             ({"user": "a/b"}, "'user'"),
         ]
@@ -51,6 +52,27 @@ class DefinitionTests(ProbeCase):
         test = load_definition(self.write_test("t.json", definition(http_expect=307, warm_marker="${HOME}/x")))
         self.assertEqual(test.http_expect, [307])
         self.assertEqual(test.warm_marker, ["${HOME}/x"])
+
+    def test_name_comes_from_the_file_not_the_path(self):
+        path = self.write_test("somewhere/else.json", definition(name="mytest"))
+        test = load_definition(path)
+        self.assertEqual(test.id, "activate.parallel.works/alvaro/webshell/mytest")
+        self.assertEqual(test.recommended_path, "activate.parallel.works/alvaro/webshell/mytest.json")
+        tests, errors = load_definitions(self.tests_dir)
+        self.assertEqual(errors, [])
+        notes = location_notes(tests, self.tests_dir)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("somewhere/else.json defines activate.parallel.works/alvaro/webshell/mytest", notes[0])
+        self.write_test("activate.parallel.works/alvaro/webshell/placed.json", definition())
+        tests, _ = load_definitions(self.tests_dir)
+        self.assertEqual(len(location_notes(tests, self.tests_dir)), 1)
+
+    def test_missing_name_is_an_error(self):
+        data = definition()
+        (self.tests_dir / "noname.json").write_text(json.dumps(data))
+        tests, errors = load_definitions(self.tests_dir)
+        self.assertEqual(tests, [])
+        self.assertIn("'name'", errors[0])
 
     def test_duplicate_ids_are_errors_and_dropped(self):
         self.write_test("a/dup.json", definition())
