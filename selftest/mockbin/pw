@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""Mock pw CLI for the offline self-tests.
+
+Behaviour comes from the JSON file named by MOCK_PW_CONFIG; per-run state lives
+under MOCK_PW_STATE so a run can move from running to a final status across
+polls. Every call is also appended to MOCK_PW_STATE/calls.log.
+
+Config keys (all optional). A <key> matches a run when it is a substring of the
+launched YAML path or of the run's --name:
+  clusters      {"gcpsmall": {"user": "alvaro", "status": "active"}, ...}
+  kube          ["k3sgpu", ...]
+  launch        {"<key>": "ok" | "fail:<message>" | "transient:<n>"}
+                transient:<n> fails the first n attempts with a 503, then succeeds
+  final         {"<key>": "completed" | "error" | "canceled" | "hang"}
+  polls         number of running polls before the final status (default 1)
+  endpoint      {"<key>": "<endpoint name prefix>"}   registered when the run completes
+  endpoint_url  URL reported for endpoints (default https://mock.example/)
+  ssh           {"<command substring>": "<stdout>"}   canned outputs for pw ssh
+  ssh_fail      true makes every pw ssh call fail
+  errors        {"<key>": "<error annotation message>"}
+"""
+import json
+import os
+import random
+import string
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+CONFIG_PATH = os.environ.get("MOCK_PW_CONFIG", "")
+CONFIG = {}
+if CONFIG_PATH and Path(CONFIG_PATH).exists():
+    CONFIG = json.loads(Path(CONFIG_PATH).read_text())
+STATE = Path(os.environ.get("MOCK_PW_STATE", "/tmp/mock_pw_state"))
+STATE.mkdir(parents=True, exist_ok=True)
+ENDPOINTS = STATE / "endpoints.json"
+
+
+def out(obj):
+    print(json.dumps(obj, indent=1) if not isinstance(obj, str) else obj)
+
+
+def opt(argv, name):
+    if name in argv:
+        i = argv.index(name)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+def strip_globals(argv):
+    rest, i = [], 0
+    while i < len(argv):
+        if argv[i] in ("--platform-host", "--context"):
+            i += 2
+            continue
+        if argv[i] in ("-v", "--verbose"):
+            i += 1
+            continue
+        rest.append(argv[i])
+        i += 1
+    return rest
+
+
+def positionals(argv, valued=("-i", "--name", "-o", "--status", "--tail")):
+    pos, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("-"):
+            i += 2 if a in valued else 1
+            continue
+        pos.append(a)
+        i += 1
+    return pos
+
+
+def lookup(section, target, name, default=None):
+    for key, value in (CONFIG.get(section) or {}).items():
+        if key in (target or "") or key in (name or ""):
+            return value
+    return default
+
+
+def read_json(path, default):
+    # Several mock processes run at once; a reader may catch a writer mid-way.
+    for _ in range(20):
+        if not path.exists():
+            return default
+        try:
+            return json.loads(path.read_text())
+        except ValueError:
+            time.sleep(0.05)
+    return default
+
+
+def write_json(path, data):
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".")
+    with os.fdopen(fd, "w") as fh:
+        json.dump(data, fh)
+    os.replace(tmp, str(path))
+
+
+def load_endpoints():
+    return read_json(ENDPOINTS, {})
+
+
+def save_endpoints(data):
+    write_json(ENDPOINTS, data)
+
+
+def run_state(slug):
+    return read_json(STATE / ("run-%s.json" % slug), None)
+
+
+def save_run(slug, data):
+    write_json(STATE / ("run-%s.json" % slug), data)
+
+
+def cmd_cluster_ls(argv):
+    records = []
+    for name, spec in (CONFIG.get("clusters") or {}).items():
+        records.append({"name": name, "user": spec.get("user", "alvaro"), "status": spec.get("status", "active"),
+                        "type": spec.get("type", "google-slurm"), "id": "id-" + name})
+    if not records:
+        print("No clusters found")
+        return 0
+    out(records)
+    return 0
+
+
+def cmd_kube_ls(argv):
+    out([{"name": n, "id": "kid-" + n} for n in CONFIG.get("kube") or []])
+    return 0
+
+
+def cmd_workflows_run(argv):
+    target = positionals(argv)[-1]
+    name = opt(argv, "--name") or ""
+    behaviour = lookup("launch", target, name, "ok")
+    if behaviour.startswith("fail:"):
+        sys.stderr.write("%s [ERROR] %s\n" % ("2026-09-21T10:00:00Z", behaviour[5:]))
+        return 1
+    if behaviour.startswith("transient:"):
+        counter = STATE / ("transient-%s" % target.replace("/", "_"))
+        seen = int(counter.read_text()) if counter.exists() else 0
+        if seen < int(behaviour.split(":")[1]):
+            counter.write_text(str(seen + 1))
+            sys.stderr.write("2026-09-21T10:00:00Z [FATAL] API error 503 Service Unavailable\n")
+            return 1
+    inputs_file = opt(argv, "-i")
+    inputs = json.loads(Path(inputs_file).read_text()) if inputs_file and Path(inputs_file).exists() else {}
+    slug = "mock-" + "".join(random.choice(string.ascii_lowercase) for _ in range(6))
+    save_run(slug, {"target": target, "polls": 0, "inputs": inputs, "name": name})
+    out({"run": {"slug": slug, "id": "id-" + slug, "status": "running", "inlineRun": True,
+                 "workflowName": "inline." + slug, "createdAt": "2026-09-21T10:00:00Z"}})
+    return 0
+
+
+def cmd_workflows_runs(argv):
+    sub = argv[2] if len(argv) > 2 else ""
+    pos = [p for p in positionals(argv) if p not in ("workflows", "runs", sub)]
+    slug = pos[0] if pos else ""
+    data = run_state(slug)
+    if sub == "view":
+        if data is None:
+            sys.stderr.write("run %s not found\n" % slug)
+            return 1
+        data["polls"] += 1
+        save_run(slug, data)
+        final = lookup("final", data["target"], data.get("name"), "completed")
+        settled = data["polls"] > int(CONFIG.get("polls", 1))
+        status = "running"
+        if data.get("canceled"):
+            status = "canceled"
+        elif settled and final != "hang":
+            status = final
+        if status == "completed" and not data.get("registered"):
+            prefix = lookup("endpoint", data["target"], data.get("name"))
+            if prefix:
+                endpoints = load_endpoints()
+                endpoints["%s-%s" % (prefix, slug)] = CONFIG.get("endpoint_url", "https://mock.example/")
+                save_endpoints(endpoints)
+            data["registered"] = True
+            save_run(slug, data)
+        jobs = {"preprocessing": {"status": "completed"},
+                "session_runner": {"status": "running" if status == "running" else "canceled"}}
+        out({"slug": slug, "status": status, "executedJobs": jobs, "inputs": data["inputs"]})
+        return 0
+    if sub == "cancel":
+        if data is None:
+            sys.stderr.write("run %s not found\n" % slug)
+            return 1
+        data["canceled"] = True
+        save_run(slug, data)
+        print("Run %s canceled" % slug)
+        return 0
+    if sub == "errors":
+        message = lookup("errors", data["target"] if data else "", data.get("name") if data else "",
+                         "Session runner failed before the endpoint came online")
+        out({"slug": slug, "status": "error", "summary": "1 job(s) failed, 1 step(s) failed",
+             "failedJobs": [{"name": "session_runner", "status": "error", "failedSteps": [
+                 {"name": "Exit Workflow with Error", "status": "error", "logTail": ["::error::" + message],
+                  "annotations": [{"type": "error", "message": message}]}]}],
+             "annotations": [{"type": "error", "message": message, "job": "session_runner"}]})
+        sys.stderr.write("[ERROR] run %s has failures\n" % slug)
+        return 1
+    sys.stderr.write("mock pw: unknown 'workflows runs %s'\n" % sub)
+    return 2
+
+
+def cmd_endpoints(argv):
+    sub = argv[1] if len(argv) > 1 else ""
+    endpoints = load_endpoints()
+    if sub == "list":
+        if not endpoints:
+            print("No endpoints found.")
+            return 0
+        for name, url in endpoints.items():
+            print("%s\trunning\t%s" % (name, url))
+        return 0
+    if sub == "delete":
+        name = positionals(argv)[-1]
+        if name in endpoints:
+            del endpoints[name]
+            save_endpoints(endpoints)
+            print("Endpoint %s deleted" % name)
+            return 0
+        sys.stderr.write("endpoint %s not found\n" % name)
+        return 1
+    return 2
+
+
+def cmd_ssh(argv):
+    if CONFIG.get("ssh_fail"):
+        sys.stderr.write("ssh: connection refused\n")
+        return 255
+    command = " ".join(argv[2:])
+    for needle, output in (CONFIG.get("ssh") or {}).items():
+        if needle in command:
+            print(output)
+            return 0
+    if "test -e" in command:
+        print("\n".join("1" for _ in command.split(";")))
+        return 0
+    if "ps -u $USER -o pid=" in command and "grep" not in command:
+        print("100\n101\n102")
+        return 0
+    if "grep -c" in command:
+        for i in range(command.count("grep -c")):
+            print("p%d=0" % i)
+        if "squeue" in command:
+            print("squeue=0")
+            print("qstat=0")
+        return 0
+    print("")
+    return 0
+
+
+def main():
+    argv = strip_globals(sys.argv[1:])
+    with open(STATE / "calls.log", "a") as fh:
+        fh.write(" ".join(sys.argv[1:]) + "\n")
+    if not argv:
+        return 0
+    if argv[0].startswith("--version"):
+        out({"releaseVersion": "v7.99.0-mock", "buildVersion": "v7.99.0-mock"})
+        return 0
+    if argv[0] == "context" and len(argv) > 1 and argv[1] == "current":
+        print("user:%s@%s" % (CONFIG.get("context_user", "alvaro"), CONFIG.get("context_host", "activate.parallel.works")))
+        return 0
+    if argv[0] in ("cluster", "clusters") and len(argv) > 1 and argv[1] in ("ls", "list"):
+        return cmd_cluster_ls(argv)
+    if argv[0] == "kube" and len(argv) > 1 and argv[1] in ("ls", "list"):
+        return cmd_kube_ls(argv)
+    if argv[0] in ("workflows", "workflow") and len(argv) > 1:
+        if argv[1] == "run":
+            return cmd_workflows_run(argv)
+        if argv[1] == "runs":
+            return cmd_workflows_runs(argv)
+    if argv[0] in ("endpoints", "endpoint"):
+        return cmd_endpoints(argv)
+    if argv[0] == "ssh":
+        return cmd_ssh(argv)
+    sys.stderr.write("mock pw: unhandled command: %s\n" % " ".join(argv))
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

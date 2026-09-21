@@ -2,5 +2,5 @@
 __pycache__/
 *.py[cod]
 
-# Test output
-/output/
+# Results written by python3 -m probe run
+/results/
