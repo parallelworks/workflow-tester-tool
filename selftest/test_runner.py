@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from probe import runner
-from probe.results import artifact_dir_name
+from probe.results import RECORD_FILE, artifact_dir_name
 from probe.runner import Console, Options
 from selftest import helpers
 from selftest.helpers import SUBMITTER, WEBSHELL, ProbeCase, definition
@@ -59,7 +59,7 @@ class RunnerTests(RunnerCase):
         dirs = self.artifact_dirs(CONTROLLER)
         self.assertEqual(dirs, [artifact_dir_name(outcome["started_at"], outcome["run_slug"])])
         files = sorted(p.name for p in (self.results_dir / CONTROLLER / dirs[0]).iterdir())
-        self.assertEqual(files, ["launch.json", "run.log", "view.json"])
+        self.assertEqual(files, ["launch.json", "record.json", "run.log", "view.json"])
         log = (self.results_dir / CONTROLLER / dirs[0] / "run.log").read_text()
         self.assertIn("launch: pw workflows run --trust ", log)
         self.assertIn(WEBSHELL, log)
@@ -96,7 +96,10 @@ class RunnerTests(RunnerCase):
         self.assertIn("is off", off["error"])
         self.assertIsNone(off["run_slug"])
         self.assertEqual(off["duration_s"], 0)
-        self.assertEqual(self.artifact_dirs(CONTROLLER), [])
+        self.assertEqual(self.artifact_dirs(CONTROLLER), [artifact_dir_name(off["started_at"], "skip")])
+        skip_dir = self.results_dir / CONTROLLER / self.artifact_dirs(CONTROLLER)[0]
+        self.assertEqual(sorted(p.name for p in skip_dir.iterdir()), ["record.json", "run.log"])
+        self.assertIn("resource check: inactive", (skip_dir / "run.log").read_text())
         missing = self.records("activate.parallel.works/alvaro/webshell/gcpgpu-controller")[0]["outcome"]
         self.assertEqual(missing["status"], "skip")
         self.assertIn("not listed", missing["error"])
@@ -253,6 +256,28 @@ class RunnerTests(RunnerCase):
         self.assertTrue((self.results_dir / "activate.parallel.works/alvaro/webshell/a").exists())
         self.assertFalse((self.results_dir / "activate.parallel.works/alvaro/jupyterlab/b").exists())
 
+    def test_selection_by_file_and_all(self):
+        self.write_test("a.json", definition())
+        self.write_test("sub/b.json", definition())
+        code, out = self.run_suite(test_files=["sub/b.json"])
+        self.assertEqual(code, 0, out)
+        self.assertTrue((self.results_dir / "activate.parallel.works/alvaro/webshell/b").exists())
+        self.assertFalse((self.results_dir / "activate.parallel.works/alvaro/webshell/a").exists())
+        code, out = self.run_suite(test_files=["missing.json"])
+        self.assertEqual(code, 2)
+        self.assertIn("test file not found", out)
+        other = definition()
+        other["user"] = "someone"
+        self.write_test("other.json", other)
+        code, out = self.run_suite(test_files=["other.json"])
+        self.assertEqual(code, 2)
+        self.assertIn("another platform or user", out)
+        code, out = self.run_suite(run_all=True, ids=["x/y/z/w"])
+        self.assertEqual(code, 2)
+        code, out = self.run_suite(run_all=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("2 selected of 3 defined", out)
+
     def test_definition_errors_give_exit_2_but_valid_tests_run(self):
         self.write_test("ok.json", definition())
         (self.tests_dir / "bad.json").write_text("{")
@@ -342,23 +367,22 @@ class BucketTests(RunnerCase):
     def cps(self):
         return [c.split("buckets cp ", 1)[1] for c in self.calls() if " buckets cp " in c]
 
-    def test_each_test_syncs_its_results(self):
+    def test_each_execution_directory_is_uploaded(self):
         self.write_test("webshell/gcpsmall-controller.json", definition())
         self.write_test("webshell/gcpgpu-controller.json", definition(resource="pw://alvaro/gcpgpu"))
         code, out = self.run_suite(bucket=self.BUCKET + "/")
         self.assertEqual(code, 0, out)
-        art = self.artifact_dirs(CONTROLLER)[0]
         cps = self.cps()
-        artifact_cp = "-r %s/%s/%s/ %s/%s/%s/" % (self.results_dir, CONTROLLER, art, self.BUCKET, CONTROLLER, art)
-        records_cp = "%s/%s/records.jsonl %s/%s/" % (self.results_dir, CONTROLLER, self.BUCKET, CONTROLLER)
-        self.assertIn(artifact_cp, cps)
-        self.assertIn(records_cp, cps)
-        self.assertLess(cps.index(artifact_cp), cps.index(records_cp))
         skipped = "activate.parallel.works/alvaro/webshell/gcpgpu-controller"
-        self.assertIn("%s/%s/records.jsonl %s/%s/" % (self.results_dir, skipped, self.BUCKET, skipped), cps)
-        self.assertFalse(any(c.startswith("-r") and skipped in c for c in cps))
+        for test_id in (CONTROLLER, skipped):
+            art = self.artifact_dirs(test_id)[0]
+            self.assertIn("-r %s/%s/%s/ %s/%s/%s/" % (self.results_dir, test_id, art, self.BUCKET, test_id, art), cps)
+            self.assertTrue((self.results_dir / test_id / art / RECORD_FILE).exists())
+        self.assertEqual(len(cps), 2)
+        self.assertFalse(any(c.startswith("pw://") for c in cps), "nothing is downloaded")
+        art = self.artifact_dirs(CONTROLLER)[0]
         log = (self.results_dir / CONTROLLER / art / "run.log").read_text()
-        self.assertIn("bucket synced: %s/%s/" % (self.BUCKET, CONTROLLER), log)
+        self.assertIn("bucket synced: %s/%s/%s/" % (self.BUCKET, CONTROLLER, art), log)
 
     def test_no_bucket_means_no_upload(self):
         self.write_test("webshell/gcpsmall-controller.json", definition())

@@ -28,16 +28,23 @@ def record(status, started, slug="mock-abc", suite="probe-1", failed_at=None, er
 
 class ResultsTests(ProbeCase):
     def write_records(self, records, test_id=TEST_ID):
+        """One execution directory per record; a string writes a malformed record.json."""
         test_dir = self.results_dir / test_id
         test_dir.mkdir(parents=True, exist_ok=True)
-        with open(test_dir / results.RECORDS_FILE, "a") as fh:
-            for r in records:
-                fh.write(json.dumps(r) + "\n" if isinstance(r, dict) else r + "\n")
+        for i, r in enumerate(records):
+            if isinstance(r, dict):
+                o = r["outcome"]
+                directory = test_dir / results.artifact_dir_name(o["started_at"], o.get("run_slug") or ("skip" if o.get("status") == "skip" else None))
+                results.write_record(directory, r)
+            else:
+                directory = test_dir / ("2026-09-%02dT000000Z_broken" % (i + 1))
+                directory.mkdir()
+                (directory / results.RECORD_FILE).write_text(r)
         return test_dir
 
-    def test_malformed_lines_ignored(self):
+    def test_malformed_records_ignored(self):
         self.write_records([record("pass", "2026-09-18T06:00:00Z"), "{broken", "", json.dumps({"schema": 2})])
-        recs = results.read_records(self.results_dir / TEST_ID / results.RECORDS_FILE)
+        recs = results.test_records(self.results_dir / TEST_ID)
         self.assertEqual(len(recs), 1)
 
     def test_regression_skips_over_skips(self):
@@ -64,16 +71,15 @@ class ResultsTests(ProbeCase):
 
     def test_running_detection(self):
         test_dir = self.write_records([record("pass", "2026-09-18T06:00:00Z", "a")])
-        (test_dir / "2026-09-18T060000Z_a").mkdir()
         (test_dir / "2026-09-18T060000Z_a" / "run.log").write_text("done")
         fresh = test_dir / "2026-09-19T060000Z_mock-new"
         fresh.mkdir()
         (fresh / "run.log").write_text("running")
         scanned = results.scan(self.results_dir)[TEST_ID]
-        running = results.running_artifacts(test_dir, scanned["records"], scanned["artifacts"])
-        self.assertEqual(running, ["2026-09-19T060000Z_mock-new"])
-        stale = results.running_artifacts(test_dir, scanned["records"], scanned["artifacts"], now=1e12)
-        self.assertEqual(stale, [])
+        self.assertEqual(scanned["running"], ["2026-09-19T060000Z_mock-new"])
+        self.assertEqual(scanned["artifacts"], ["2026-09-19T060000Z_mock-new", "2026-09-18T060000Z_a"])
+        self.assertEqual(len(scanned["records"]), 1)
+        self.assertEqual(results.running_executions(test_dir, now=1e12), [])
 
 
 class ServerTests(ProbeCase):
@@ -82,12 +88,9 @@ class ServerTests(ProbeCase):
         self.write_test("webshell/gcpsmall-controller.json", definition())
         self.write_test("webshell/gcpsmall-compute.json", definition(scheduler=True))
         test_dir = self.results_dir / TEST_ID
-        test_dir.mkdir(parents=True)
-        with open(test_dir / results.RECORDS_FILE, "w") as fh:
-            fh.write(json.dumps(record("pass", "2026-09-18T06:00:00Z", "a", "s1")) + "\n")
-            fh.write(json.dumps(record("fail", "2026-09-19T06:00:00Z", "b", "s2", "run", "boom")) + "\n")
+        results.write_record(test_dir / "2026-09-18T060000Z_a", record("pass", "2026-09-18T06:00:00Z", "a", "s1"))
         art = test_dir / "2026-09-19T060000Z_b"
-        art.mkdir()
+        results.write_record(art, record("fail", "2026-09-19T06:00:00Z", "b", "s2", "run", "boom"))
         (art / "run.log").write_text("hello log\n")
         (art / "errors.txt").write_text("boom\n")
         self.secret = self.root / "secret.txt"
@@ -157,7 +160,7 @@ class ServerTests(ProbeCase):
         status, body, _ = self.get("/api/tests/%s/artifacts" % TEST_ID)
         listing = json.loads(body)["artifacts"]
         self.assertEqual(listing[0]["name"], "2026-09-19T060000Z_b")
-        self.assertEqual([f["name"] for f in listing[0]["files"]], ["errors.txt", "run.log"])
+        self.assertEqual([f["name"] for f in listing[0]["files"]], ["errors.txt", "record.json", "run.log"])
         status, body, headers = self.get("/api/tests/%s/artifacts/2026-09-19T060000Z_b/run.log" % TEST_ID)
         self.assertEqual((status, body), (200, "hello log\n"))
         self.assertTrue(headers["Content-Type"].startswith("text/plain"))
@@ -203,6 +206,20 @@ class ServerTests(ProbeCase):
         self.assertTrue(conflicts([{"a"}], ["a", "b"]))
         self.assertTrue(conflicts([{"a"}], []))
         self.assertTrue(conflicts([None], ["b"]))
+
+    def test_refresh_pulls_from_the_bucket_even_when_read_only(self):
+        status, data = self.post("/api/refresh", {})
+        self.assertEqual(status, 502)
+        self.assertIn("no results bucket", data["message"])
+        self.cfg.bucket = "pw://alvaro/gcpbucket/probe/results"
+        try:
+            status, data = self.post("/api/refresh", {})
+            self.assertEqual(status, 200)
+            self.assertTrue(data["refreshed"])
+            calls = (self.state_dir / "calls.log").read_text()
+            self.assertIn("buckets cp -r pw://alvaro/gcpbucket/probe/results/ %s/" % self.cfg.results_dir, calls)
+        finally:
+            self.cfg.bucket = None
 
     def test_admin_actions_refused_when_read_only(self):
         status, data = self.post("/api/run", {"ids": [TEST_ID]})

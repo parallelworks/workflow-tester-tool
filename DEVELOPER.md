@@ -7,12 +7,14 @@ probe/__main__.py     command line: run, serve, list
 probe/definitions.py  test definition files: validation, ids (from the fields, not the path), target derivation
 probe/pw.py           pw CLI wrapper, git checkout of workflow YAMLs
 probe/runner.py       one run of the suite: gate, launch, poll, verdict, cleanup, record, bucket sync
-probe/results.py      results tree: records.jsonl, artifact directories, state and history
+probe/results.py      results tree: one record.json per execution directory, state and history
 probe/server.py       dashboard server: static web/ plus the JSON API
 web/                  index.html, app.js, styles.css (no build step, no external assets)
 tests/                test definitions shipped with this repository
 selftest/             offline unit tests with a mock pw CLI
-workflow/workflow.yaml  the ACTIVATE workflow that deploys PROBE
+workflow/workflow.yaml  platform workflow: the two dashboards
+workflow/run-tests.yaml platform workflow: run all or selected tests once
+.github/workflows/    dashboard.yml deploys workflow.yaml; run-tests.yml deploys run-tests.yaml (manual or nightly)
 ```
 
 No third-party Python packages. The code targets Python 3.8; cluster login nodes run
@@ -37,8 +39,8 @@ including path safety and the read-only refusal of admin actions. About a minute
 `runner.TestRun.execute`, in order:
 
 1. Resource gate: `pw cluster ls -o json` (or `pw kube ls`), fetched once per suite run.
-   Off or unlisted: record `skip`, no artifact directory.
-2. Artifact directory `<start>_pending`, renamed to `<start>_<slug>` after the launch
+   Off or unlisted: a `<start>_skip` directory with the record and the log.
+2. Execution directory `<start>_pending`, renamed to `<start>_<slug>` after the launch
    or `<start>_launch-failed`.
 3. Workflow YAML: one shallow `git fetch --depth 1` per `(repo, ref)` per suite run, the
    YAML materialised with sparse checkout. Its HEAD is `workflow.commit`.
@@ -55,9 +57,10 @@ including path safety and the read-only refusal of admin actions. About a minute
 8. Teardown: `pw endpoints delete` for each, wait until they disappear, then the
    `leftover_patterns` check over `pw ssh`, retried for two minutes. A run that
    registered no endpoint has nothing to delete; every test is treated the same.
-9. Append the record, then upload the artifact directory and `records.jsonl` to the
-   bucket (`--bucket`), records last so the bucket never has a record without its
-   artifacts. A failed upload is reported and makes the runner exit 2.
+9. Write `record.json` into the execution directory (atomically), then upload the
+   directory to the bucket (`--bucket`). Each execution has its own directory, so
+   uploads never overwrite another runner's results. A failed upload is reported and
+   makes the runner exit 2.
 
 The record is written on every path, including internal errors.
 
@@ -80,10 +83,10 @@ queued tests are not started.
 
 ## Results and the dashboard
 
-`results.py` owns the conventions: `records.jsonl` per test, artifact directory
-`<start time without colons>_<run slug>`, `HISTORY_LENGTH` records in the state. A test
-shows as running when an artifact directory exists that no record accounts for and
-whose `run.log` changed in the last two hours.
+`results.py` owns the conventions: execution directory `<start time without
+colons>_<run slug>` (or `_skip`, `_launch-failed`) holding `record.json`,
+`HISTORY_LENGTH` records in the state. A test shows as running when an execution
+directory has no `record.json` yet and its `run.log` changed in the last two hours.
 
 `server.py` serves `web/` and this API, recognised by the `/api/` segment wherever the
 endpoint prefix puts it:
@@ -91,10 +94,11 @@ endpoint prefix puts it:
 | Route | Returns |
 |---|---|
 | `GET api/state` | every test (from records and definitions) with status, change, history, target; suite runs; definition errors |
-| `GET api/tests/<id>/records` | all records of a test |
+| `GET api/tests/<id>/records` | all records of a test, oldest first |
 | `GET api/tests/<id>/definition` | the definition file |
 | `GET api/tests/<id>/artifacts` | artifact directories and files |
 | `GET api/tests/<id>/artifacts/<dir>/<file>` | an artifact (last 4 MB) |
+| `POST api/refresh` | pulls the bucket into the local results copy (both dashboards) |
 | `POST api/run` `{"ids": [...]}` or `{"all": true}` | admin: starts `python3 -m probe run --bucket ...` in the background; 409 while an overlapping run is in progress |
 | `POST api/cancel` `{"slug", "platform"}` | admin: `pw workflows runs cancel` |
 
@@ -106,18 +110,29 @@ The dashboard is served at `/` behind a subdomain endpoint or under
 from its own location; the server takes the prefix from `--prefix` (`pw endpoints run`
 passes `{path}`), `PW_ENDPOINT_PATH` or `X-Forwarded-Prefix`.
 
-## The workflow
+## The workflows
 
 `workflow/workflow.yaml` has three jobs on the chosen resource. `setup` checks out this
 repository and the test definitions and restores the results from the bucket (a bucket
 path with no objects yet is fine; any other failure stops the run). `dashboard` and
 `admin_dashboard` each run `pw endpoints run --name probe[-admin]-${PW_RUN_SLUG} --
 python3 -m probe serve ... --bucket <bucket>/<path>`, which lives for the rest of the
-run. Runs started from the admin dashboard inherit the bucket, so their results are
-uploaded as they finish.
+run. Runs started from the admin dashboard inherit the bucket. The `Refresh` button
+calls `api/refresh`, which pulls the bucket into the local copy.
+
+`workflow/run-tests.yaml` has one job: checkout, fetch the test definitions, then
+`python3 -m probe run --bucket <bucket>/<path> --all` or `--test <file>` per line of the
+`selection` input. The step's exit code is the runner's, so a failing test ends the run
+in error, which the GitHub action reports.
+
+The GitHub actions install the `pw` CLI on the runner, authenticate with the platform's
+repository secret, write `inputs.json`, and `pw workflows run --trust` the YAML from the
+checked-out repository. `run-tests.yml` also has a nightly `schedule`; without dispatch
+inputs it reads the repository variables `PROBE_PLATFORM`, `PROBE_RESOURCE`,
+`PROBE_BUCKET` and `PROBE_BUCKET_PATH`.
 
 Validate a change with `pw workflows run --trust --dry-run -i inputs.json
-/abs/path/workflow/workflow.yaml`. The `code` inputs pick the repository and branch of
+/abs/path/workflow/<file>.yaml`. The `code` inputs pick the repository and branch of
 this code, so a development branch is tested by pointing `code.branch` at it.
 
 ## Adding tests

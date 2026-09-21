@@ -539,7 +539,21 @@ el["f-clear"].addEventListener("click", () => {
   writeFilters();
   renderAll();
 });
-el.refresh.addEventListener("click", () => { el.refresh.disabled = true; load().finally(() => { el.refresh.disabled = false; }); });
+el.refresh.addEventListener("click", async () => {
+  el.refresh.disabled = true;
+  if (state.data && state.data.bucket) {
+    el.refresh.textContent = "Refreshing";
+    try {
+      await post("api/refresh", {});
+      notice("");
+    } catch (error) {
+      notice(`Could not refresh from the bucket: ${error.message}`, "error");
+    }
+    el.refresh.textContent = "Refresh";
+  }
+  await load();
+  el.refresh.disabled = false;
+});
 el.theme.addEventListener("click", toggleTheme);
 el["run-all"].addEventListener("click", runAll);
 

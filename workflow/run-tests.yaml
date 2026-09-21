@@ -1,0 +1,125 @@
+# yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
+# PROBE: runs tests once and exits. Every test's results go to the bucket as soon
+# as it finishes; the run ends in error when a test fails.
+permissions:
+  - '*'
+env:
+  PW_PLATFORM_HOST: ${{ env.PW_PLATFORM_HOST }}
+  PW_USER: ${{ env.PW_USER }}
+  PW_API_KEY: ${{ env.PW_API_KEY }}
+jobs:
+  run:
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Checkout PROBE
+        uses: parallelworks/checkout
+        with:
+          repo: ${{ inputs.code.repo }}
+          branch: ${{ inputs.code.branch }}
+      - name: Fetch test definitions
+        run: |
+          set -eo pipefail
+          cd ${PW_PARENT_JOB_DIR}
+          REPO="${{ inputs.tests.repo }}"
+          BRANCH="${{ inputs.tests.branch }}"
+          DIR="${{ inputs.tests.directory }}"
+          DIR="${DIR#/}"; DIR="${DIR%/}"; DIR="${DIR:-tests}"
+          echo "::notice::Fetching test definitions from ${REPO}@${BRANCH} (directory ${DIR})"
+          rm -rf tests-src tests
+          export GIT_TERMINAL_PROMPT=0 GIT_LFS_SKIP_SMUDGE=1
+          git clone -q --no-checkout --depth 1 --filter=blob:none --branch "${BRANCH}" "${REPO}" tests-src
+          ( cd tests-src
+            git sparse-checkout init --no-cone
+            git sparse-checkout set "${DIR}"
+            git checkout -q )
+          if [ ! -d "tests-src/${DIR}" ]; then
+            echo "::error::Directory '${DIR}' not found in ${REPO}@${BRANCH}"
+            exit 1
+          fi
+          mkdir -p tests
+          cp -a "tests-src/${DIR}/." tests/
+          rm -rf tests-src
+          echo "::notice::$(find tests -name '*.json' | wc -l) test definition file(s) staged"
+      - name: Run tests
+        run: |
+          cd ${PW_PARENT_JOB_DIR}
+          export PATH=$HOME/pw:$PATH
+          BUCKET="${{ inputs.results.bucket.uri }}"
+          case "${BUCKET}" in
+            ''|undefined|pw://) echo "::error::A results bucket is required"; exit 1 ;;
+          esac
+          RESULTS="${BUCKET%/}/${{ inputs.results.path }}"
+          RESULTS="${RESULTS%/}"
+          cat > selection.txt <<'SELECTION'
+          ${{ inputs.selection }}
+          SELECTION
+          ARGS=""
+          if [ -z "$(tr -d '[:space:]' < selection.txt)" ] || grep -qx '[[:space:]]*all[[:space:]]*' selection.txt; then
+            ARGS="--all"
+          else
+            for f in $(cat selection.txt); do ARGS="${ARGS} --test ${f}"; done
+          fi
+          echo "::notice::python3 -m probe run --tests tests --results results --bucket ${RESULTS} ${ARGS}"
+          mkdir -p results
+          python3 -u -m probe run --tests tests --results results --bucket "${RESULTS}" ${ARGS}
+'on':
+  execute:
+    inputs:
+      resource:
+        type: compute-clusters
+        label: Resource
+        include-workspace: true
+        tooltip: |
+          Where PROBE runs: the user workspace or the login node of a connected
+          cluster. Tests are launched from here with the pw CLI.
+      selection:
+        type: editor
+        label: Tests to run
+        default: all
+        tooltip: |
+          all, or test definition files relative to the tests directory, one per
+          line or separated by spaces, e.g.
+          activate.parallel.works/alvaro/webshell/gcpsmall-controller.json
+      tests:
+        type: group
+        label: Test definitions
+        tooltip: Git repository, branch and directory of the test definition files.
+        items:
+          repo:
+            type: string
+            label: Repository
+            default: https://github.com/parallelworks/workflow-tester-tool.git
+          branch:
+            type: string
+            label: Branch
+            default: main
+          directory:
+            type: string
+            label: Directory
+            default: tests
+      results:
+        type: group
+        label: Results
+        tooltip: The bucket that holds the results; every test's records and artifacts are uploaded as it finishes.
+        items:
+          bucket:
+            type: bucket
+            label: Bucket
+          path:
+            type: string
+            label: Path in bucket
+            default: probe/results
+      code:
+        type: group
+        label: PROBE code
+        tooltip: Where the runner code is fetched from.
+        items:
+          repo:
+            type: string
+            label: Repository
+            default: https://github.com/parallelworks/workflow-tester-tool.git
+          branch:
+            type: string
+            label: Branch
+            default: main

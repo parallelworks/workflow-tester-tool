@@ -1,0 +1,142 @@
+name: Run PROBE tests
+
+# Runs workflow/run-tests.yaml on the platform: all tests of the platform and
+# user, or the listed test files. Results go to the bucket as each test finishes;
+# open the dashboard and press Refresh to see them. On a schedule the platform,
+# resource and bucket come from the repository variables PROBE_PLATFORM,
+# PROBE_RESOURCE, PROBE_BUCKET and PROBE_BUCKET_PATH, with the defaults below.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform host'
+        required: true
+        type: choice
+        options:
+          - activate.parallel.works
+          - activate.hpc.mil
+      resource:
+        description: 'Resource the tests are launched from (e.g. pw://alvaro/user-workspace)'
+        required: true
+        default: 'pw://alvaro/gcpsmall'
+        type: string
+      selection:
+        description: 'all, or test files relative to the tests directory separated by spaces'
+        required: false
+        default: 'all'
+        type: string
+      bucket:
+        description: 'Results bucket URI'
+        required: true
+        default: 'pw://alvaro/gcpbucket'
+        type: string
+      bucket_path:
+        description: 'Path inside the bucket'
+        required: false
+        default: 'probe/results'
+        type: string
+      tests_repo:
+        description: 'Repository holding the test definitions (default: this repository)'
+        required: false
+        default: ''
+        type: string
+      tests_branch:
+        description: 'Branch of the tests repository (default: the branch this action runs from)'
+        required: false
+        default: ''
+        type: string
+      tests_directory:
+        description: 'Directory of test definitions inside the repository'
+        required: false
+        default: 'tests'
+        type: string
+      wait:
+        description: 'Wait for the tests and fail this job when one fails'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      PW_PLATFORM_HOST: ${{ inputs.platform || vars.PROBE_PLATFORM || 'activate.parallel.works' }}
+      RESOURCE: ${{ inputs.resource || vars.PROBE_RESOURCE || 'pw://alvaro/gcpsmall' }}
+      BUCKET: ${{ inputs.bucket || vars.PROBE_BUCKET || 'pw://alvaro/gcpbucket' }}
+      BUCKET_PATH: ${{ inputs.bucket_path || vars.PROBE_BUCKET_PATH || 'probe/results' }}
+      SELECTION: ${{ inputs.selection || 'all' }}
+      TESTS_REPO: ${{ inputs.tests_repo }}
+      TESTS_BRANCH: ${{ inputs.tests_branch }}
+      TESTS_DIRECTORY: ${{ inputs.tests_directory || 'tests' }}
+      WAIT: ${{ github.event_name == 'schedule' || inputs.wait }}
+      THIS_REPO: ${{ github.server_url }}/${{ github.repository }}.git
+      THIS_BRANCH: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pw CLI
+        run: |
+          mkdir -p ~/bin
+          wget -q "https://${PW_PLATFORM_HOST}/cli/pw-linux-amd64" -O ~/bin/pw
+          chmod +x ~/bin/pw
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate pw CLI
+        env:
+          KEY_PARALLEL_WORKS: ${{ secrets.ACTIVATE_PARALLEL_WORKS }}
+          KEY_HPC_MIL: ${{ secrets.ACTIVATE_HPC_MIL }}
+        run: |
+          case "${PW_PLATFORM_HOST}" in
+            activate.hpc.mil) pw auth apikey "${KEY_HPC_MIL}" ;;
+            *) pw auth apikey "${KEY_PARALLEL_WORKS}" ;;
+          esac
+
+      - name: Create inputs.json
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          env = os.environ
+          inputs = {
+              "resource": env["RESOURCE"],
+              "selection": env["SELECTION"],
+              "tests": {"repo": env["TESTS_REPO"] or env["THIS_REPO"],
+                        "branch": env["TESTS_BRANCH"] or env["THIS_BRANCH"],
+                        "directory": env["TESTS_DIRECTORY"]},
+              "results": {"bucket": env["BUCKET"], "path": env["BUCKET_PATH"]},
+              "code": {"repo": env["THIS_REPO"], "branch": env["THIS_BRANCH"]},
+          }
+          json.dump(inputs, open("inputs.json", "w"), indent=2)
+          print(json.dumps(inputs, indent=2))
+          EOF
+
+      - name: Run the tests
+        run: |
+          pw workflows run --trust -o json \
+            --name "PROBE tests (${{ github.ref_name }}, ${{ github.event_name }})" \
+            -i inputs.json "$GITHUB_WORKSPACE/workflow/run-tests.yaml" | tee run.json
+          SLUG=$(python3 -c "import json; print(json.load(open('run.json'))['run']['slug'])")
+          echo "::notice::Platform run ${SLUG}: pw workflows runs view ${SLUG}"
+          if [ "${WAIT}" != "true" ]; then
+            exit 0
+          fi
+          while :; do
+            STATUS=$(pw workflows runs view -o json "${SLUG}" 2>/dev/null | python3 -c "import json,sys
+raw = sys.stdin.read()
+try:
+    print(json.loads(raw[raw.index('{'):]).get('status', ''))
+except Exception:
+    print('')")
+            case "${STATUS}" in
+              completed)
+                echo "All tests passed."
+                pw workflows runs logs --job run --step "Run tests" --tail 40 "${SLUG}" || true
+                exit 0 ;;
+              error|failed|canceled)
+                pw workflows runs logs --job run --step "Run tests" --tail 60 "${SLUG}" || true
+                echo "::error::Run ${SLUG} ended with status ${STATUS}: a test failed or the run broke. See the dashboard or pw workflows runs errors ${SLUG}"
+                exit 1 ;;
+            esac
+            sleep 60
+          done

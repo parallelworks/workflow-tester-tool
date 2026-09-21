@@ -1,0 +1,104 @@
+name: Start PROBE dashboard
+
+# Deploys workflow/workflow.yaml on the platform: the read-only and admin
+# dashboards for the results in the bucket. The platform run stays alive until
+# it is canceled. Nothing runs tests here.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform host'
+        required: true
+        type: choice
+        options:
+          - activate.parallel.works
+          - activate.hpc.mil
+      resource:
+        description: 'Resource the dashboards run on (e.g. pw://alvaro/user-workspace)'
+        required: true
+        default: 'pw://alvaro/gcpsmall'
+        type: string
+      bucket:
+        description: 'Results bucket URI'
+        required: true
+        default: 'pw://alvaro/gcpbucket'
+        type: string
+      bucket_path:
+        description: 'Path inside the bucket'
+        required: false
+        default: 'probe/results'
+        type: string
+      tests_repo:
+        description: 'Repository holding the test definitions (default: this repository)'
+        required: false
+        default: ''
+        type: string
+      tests_branch:
+        description: 'Branch of the tests repository (default: the branch this action runs from)'
+        required: false
+        default: ''
+        type: string
+      tests_directory:
+        description: 'Directory of test definitions inside the repository'
+        required: false
+        default: 'tests'
+        type: string
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    env:
+      PW_PLATFORM_HOST: ${{ inputs.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pw CLI
+        run: |
+          mkdir -p ~/bin
+          wget -q "https://${PW_PLATFORM_HOST}/cli/pw-linux-amd64" -O ~/bin/pw
+          chmod +x ~/bin/pw
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate pw CLI
+        env:
+          KEY_PARALLEL_WORKS: ${{ secrets.ACTIVATE_PARALLEL_WORKS }}
+          KEY_HPC_MIL: ${{ secrets.ACTIVATE_HPC_MIL }}
+        run: |
+          case "${PW_PLATFORM_HOST}" in
+            activate.hpc.mil) pw auth apikey "${KEY_HPC_MIL}" ;;
+            *) pw auth apikey "${KEY_PARALLEL_WORKS}" ;;
+          esac
+
+      - name: Create inputs.json
+        env:
+          RESOURCE: ${{ inputs.resource }}
+          BUCKET: ${{ inputs.bucket }}
+          BUCKET_PATH: ${{ inputs.bucket_path }}
+          TESTS_REPO: ${{ inputs.tests_repo }}
+          TESTS_BRANCH: ${{ inputs.tests_branch }}
+          TESTS_DIRECTORY: ${{ inputs.tests_directory }}
+          THIS_REPO: ${{ github.server_url }}/${{ github.repository }}.git
+          THIS_BRANCH: ${{ github.ref_name }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          env = os.environ
+          inputs = {
+              "resource": env["RESOURCE"],
+              "tests": {"repo": env["TESTS_REPO"] or env["THIS_REPO"],
+                        "branch": env["TESTS_BRANCH"] or env["THIS_BRANCH"],
+                        "directory": env["TESTS_DIRECTORY"] or "tests"},
+              "results": {"bucket": env["BUCKET"], "path": env["BUCKET_PATH"] or "probe/results"},
+              "code": {"repo": env["THIS_REPO"], "branch": env["THIS_BRANCH"]},
+          }
+          json.dump(inputs, open("inputs.json", "w"), indent=2)
+          print(json.dumps(inputs, indent=2))
+          EOF
+
+      - name: Start the dashboards
+        run: |
+          pw workflows run --trust -o json \
+            --name "PROBE dashboard (${{ github.ref_name }})" \
+            -i inputs.json "$GITHUB_WORKSPACE/workflow/workflow.yaml" | tee run.json
+          SLUG=$(python3 -c "import json; print(json.load(open('run.json'))['run']['slug'])")
+          echo "::notice::Dashboards: endpoints probe-${SLUG} and probe-admin-${SLUG} (pw endpoints list). Cancel with: pw workflows runs cancel ${SLUG}"

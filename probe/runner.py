@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Tuple
 from . import __version__
 from .definitions import Target, TestDef, load_tests
 from .pw import Checkout, Endpoint, FetchError, Pw, PwError, one_line
-from .results import RECORDS_FILE, SCHEMA, append_record, artifact_dir_name
+from .results import SCHEMA, artifact_dir_name, write_record
 
 TERMINAL = {"completed", "error", "canceled", "failed"}
 LAUNCH_ATTEMPTS = 3
@@ -62,6 +62,8 @@ class Options:
     dry_run: bool = False
     filters: List[str] = field(default_factory=list)
     ids: List[str] = field(default_factory=list)
+    test_files: List[str] = field(default_factory=list)
+    run_all: bool = False
     bucket: Optional[str] = None
 
 
@@ -217,27 +219,22 @@ class Suite:
         with self._lock:
             return self._locks.setdefault(key, threading.Lock())
 
-    def sync(self, test_dir: Path, artifact: Optional[Path], log) -> None:
-        """Upload a test's new artifact directory and its records.jsonl to the
-        bucket, the ground truth for results. The records file goes last so a
-        record never points at artifacts the bucket does not hold yet."""
+    def sync(self, artifact: Path, log) -> None:
+        """Upload an execution directory to the bucket, the ground truth for
+        results. Each execution has its own directory, so uploads never
+        overwrite another runner's results."""
         if not self.opts.bucket:
             return
-        base = self.opts.bucket.rstrip("/")
-        prefix = "%s/%s" % (base, test_dir.relative_to(self.opts.results_dir).as_posix())
-        uploads = []
-        if artifact is not None and artifact.is_dir():
-            uploads.append((str(artifact) + "/", "%s/%s/" % (prefix, artifact.name), True))
-        uploads.append((str(test_dir / RECORDS_FILE), prefix + "/", False))
-        for source, destination, recursive in uploads:
-            r = self.pw.bucket_cp(source, destination, recursive)
-            if r.rc != 0:
-                with self._lock:
-                    self.sync_failures += 1
-                log("bucket sync failed: %s -> %s: %s" % (source, destination, r.one_line()))
-                self.console("bucket sync failed for %s: %s" % (prefix, r.one_line(160)))
-                return
-        log("bucket synced: %s/" % prefix)
+        relative = artifact.relative_to(self.opts.results_dir).as_posix()
+        destination = "%s/%s/" % (self.opts.bucket.rstrip("/"), relative)
+        r = self.pw.bucket_cp(str(artifact) + "/", destination, recursive=True)
+        if r.rc != 0:
+            with self._lock:
+                self.sync_failures += 1
+            log("bucket sync failed: %s: %s" % (destination, r.one_line()))
+            self.console("bucket sync failed for %s: %s" % (relative, r.one_line(160)))
+            return
+        log("bucket synced: %s" % destination)
 
 
 def format_errors(text: str) -> str:
@@ -306,8 +303,9 @@ class TestRun:
             if state in ("inactive", "missing"):
                 self.outcome["status"] = "skip"
                 self.outcome["error"] = detail
+                self.make_artifact_dir("skip")
                 return self.finish()
-            self.make_artifact_dir()
+            self.make_artifact_dir("pending")
             try:
                 yaml_path, self.commit = self.suite.workflow_file(test)
             except FetchError as exc:
@@ -339,9 +337,9 @@ class TestRun:
 
     # -- artifacts ---------------------------------------------------------
 
-    def make_artifact_dir(self) -> None:
+    def make_artifact_dir(self, suffix: str) -> None:
         self.test_dir.mkdir(parents=True, exist_ok=True)
-        self.art = self.test_dir / artifact_dir_name(self.outcome["started_at"], "pending")
+        self.art = self.test_dir / artifact_dir_name(self.outcome["started_at"], suffix)
         self.art.mkdir(exist_ok=True)
         self.log.attach(self.art / "run.log")
 
@@ -605,10 +603,11 @@ class TestRun:
                        "type": self.target.type, "node": self.target.node},
             "outcome": dict(self.outcome),
         }
-        self.test_dir.mkdir(parents=True, exist_ok=True)
-        append_record(self.test_dir / RECORDS_FILE, record)
+        if self.art is None:
+            self.make_artifact_dir("launch-failed")
+        write_record(self.art, record)
         self.log("record: %s" % json.dumps(record["outcome"]))
-        self.suite.sync(self.test_dir, self.art, self.log)
+        self.suite.sync(self.art, self.log)
         self.log.close()
         return record
 
@@ -670,9 +669,28 @@ def run_suite(opts: Options, console: Optional[Console] = None) -> int:
 
     mine = [t for t in tests if t.platform == platform and t.user == user]
     selected = mine
+    if opts.run_all and (opts.ids or opts.filters or opts.test_files):
+        console("--all cannot be combined with --test, --id or --filter")
+        return 2
+    if opts.test_files:
+        wanted = set()
+        for raw in opts.test_files:
+            candidate = Path(raw)
+            if not candidate.is_absolute():
+                inside = opts.tests_dir / raw
+                candidate = inside if inside.exists() else Path.cwd() / raw
+            if not candidate.is_file():
+                console("test file not found: %s" % raw)
+                return 2
+            wanted.add(candidate.resolve())
+        selected = [t for t in selected if t.path.resolve() in wanted]
+        for path in sorted(wanted - {t.path.resolve() for t in selected}):
+            console("cannot run %s here: invalid, or defined for another platform or user" % path)
+        if len(selected) != len(wanted):
+            return 2
     if opts.ids:
-        wanted = set(opts.ids)
-        selected = [t for t in selected if t.id in wanted]
+        wanted_ids = set(opts.ids)
+        selected = [t for t in selected if t.id in wanted_ids]
     if opts.filters:
         selected = [t for t in selected if t.matches(opts.filters)]
 

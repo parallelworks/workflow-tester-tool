@@ -23,7 +23,7 @@ from urllib.parse import unquote, urlparse
 from . import __version__
 from .definitions import load_tests
 from .pw import Pw
-from .results import RECORDS_FILE, id_parts, running_artifacts, scan, state, suite_runs, valid_id
+from .results import id_parts, scan, state, suite_runs, test_records, valid_id
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -43,6 +43,20 @@ class Config:
         # runners started from the admin dashboard: (process, ids or None for all)
         self.active_runs: list = []
         self.lock = threading.Lock()
+        self.refresh_lock = threading.Lock()
+
+
+def pull_from_bucket(cfg: Config):
+    """Replace the local results copy with the bucket's. (ok, message)."""
+    if not cfg.bucket:
+        return False, "no results bucket configured"
+    with cfg.refresh_lock:
+        result = Pw().bucket_cp(cfg.bucket + "/", str(cfg.results_dir) + "/", recursive=True)
+    if result.rc == 0:
+        return True, "results refreshed from %s" % cfg.bucket
+    if "no objects found" in result.text.lower():
+        return True, "the bucket has no results yet"
+    return False, result.one_line()
 
 
 def runner_command(cfg: Config, ids: List[str]) -> List[str]:
@@ -79,7 +93,7 @@ def build_state(cfg: Config) -> dict:
         entry = scanned.get(test_id)
         records = entry["records"] if entry else []
         all_records.extend(records)
-        running = running_artifacts(entry["dir"], records, entry["artifacts"]) if entry else []
+        running = entry["running"] if entry else []
         current_state = state(test_id, records, running)
         definition = defined.get(test_id)
         current = current_state["current"]
@@ -164,6 +178,9 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         route = self._api_route(unquote(urlparse(self.path).path))
+        if route == "/refresh":
+            ok, message = pull_from_bucket(self.cfg)
+            return self._json({"refreshed": ok, "message": message}, 200 if ok else 502)
         if not self.cfg.admin:
             return self._json({"error": "this dashboard is read-only"}, 403)
         if route == "/run":
@@ -196,8 +213,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json({"error": "invalid test id"}, 400)
         test_dir = self.cfg.results_dir / test_id
         if what == "records":
-            from .results import read_records
-            return self._json({"id": test_id, "records": read_records(test_dir / RECORDS_FILE)})
+            return self._json({"id": test_id, "records": test_records(test_dir)})
         if what == "definition":
             tests, _ = load_tests(self.cfg.tests_dir)
             for test in tests:

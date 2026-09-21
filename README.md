@@ -4,67 +4,96 @@ PROBE runs compatibility tests of [Parallel Works ACTIVATE](https://parallelwork
 workflows on the systems connected to a platform and shows the results in a dashboard.
 A test launches one workflow from a git repository with fixed inputs on one system.
 PROBE waits for the run to end, deletes the endpoints the run registered, and appends a
-record.
+record. Runs are repeated over time, so a workflow that stops working on a system shows
+up as a regression.
 
-| | |
+## The pieces
+
+```
+ test definitions                 runner                          results bucket
+ tests/<platform>/<user>/         python3 -m probe run            <bucket>/<path>/<test id>/
+   <workflow_name>/<name>.json ─▶  launches pw workflows run  ─▶    <start>_<run slug>/record.json
+ (this repo or any git repo)       one directory per execution         + run.log, launch.json, view.json
+                                        ▲                                   │
+              workflow/run-tests.yaml ──┘                                   ▼
+              (admin dashboard, GitHub "Run PROBE tests",          dashboard  python3 -m probe serve
+               or pw workflows run by hand)                        workflow/workflow.yaml, two pw endpoints,
+                                                                   Refresh pulls the bucket
+```
+
+| Piece | What it is |
 |---|---|
-| Test definitions | One JSON file per test under `tests/` in this repository, or under any directory of any git repository given to the workflow. Recommended location: `<platform>/<user>/<workflow_name>/<name>.json` |
-| Results | `<bucket>/<path>/<platform>/<user>/<workflow_name>/<test>/`: `records.jsonl` plus one directory of artifacts per execution. The bucket is the ground truth; each test's results are uploaded as soon as it finishes |
-| Running tests | The admin dashboard (`Run all`, `Rerun test`) or `python3 -m probe run` |
-| Code | `probe/` runner and dashboard server (Python 3.8+, standard library only), `web/` dashboard, `workflow/workflow.yaml` deployment |
+| Test definitions | One JSON file per test. Recommended location `<platform>/<user>/<workflow_name>/<name>.json`, in this repository's `tests/` or in any git repository you point the workflows at. |
+| Results bucket | The ground truth. `<bucket>/<path>/<platform>/<user>/<workflow_name>/<name>/` holds one directory per execution with its `record.json` and artifacts. Every runner uploads an execution's directory as soon as the test finishes; nothing is ever overwritten. |
+| Runner | `python3 -m probe run`: checks the target is on, launches the workflow, waits for the verdict, cleans up, appends the record and uploads it. |
+| Dashboard | `python3 -m probe serve`: the compatibility matrix, per-test history and logs. `Refresh` pulls the latest results from the bucket. The admin dashboard can also start tests and cancel runs. |
+| `workflow/workflow.yaml` | Platform workflow that serves the two dashboards as `pw` endpoints `probe-<run slug>` (read-only) and `probe-admin-<run slug>`. Lives until the run is canceled. Runs no tests. |
+| `workflow/run-tests.yaml` | Platform workflow that runs all tests, or the listed test files, once and exits. Ends in error when a test fails. |
+| `.github/workflows/dashboard.yml` | GitHub action, manual: deploys `workflow.yaml` on the platform. |
+| `.github/workflows/run-tests.yml` | GitHub action, manual or nightly (06:00 UTC): deploys `run-tests.yaml`, waits, and fails when a test fails. |
 
-## Deploy
+The code is the `probe/` package (Python 3.8+, standard library only) and `web/`.
 
-Run `workflow/workflow.yaml` on the platform, either registered as a workflow or with
-`pw workflows run --trust -i inputs.json /abs/path/workflow/workflow.yaml`.
+## Start the dashboard
+
+Run `workflow/workflow.yaml` on the platform: from the GitHub action **Start PROBE
+dashboard**, or by hand with `pw workflows run --trust -i inputs.json
+/abs/path/workflow/workflow.yaml`.
 
 | Input | Meaning |
 |---|---|
-| Resource | Where PROBE runs: the user workspace or a cluster login node with the `pw` CLI, `python3` and `git`. Tests are launched from here. |
-| Test definitions | Repository, branch and directory of the test files. Default: this repository, `main`, `tests`. |
-| Results | Bucket and path of the results. Required. Restored when the run starts, updated after every test. |
-| PROBE code | Repository and branch of the runner and dashboard code. |
+| Resource | Where the dashboards run and where tests started from the admin dashboard are launched: the user workspace or a cluster login node with the `pw` CLI, `python3` and `git`. |
+| Test definitions | Repository, branch and directory of the test files. |
+| Results | Bucket and path of the results. Restored when the run starts; `Refresh` pulls them again. |
+| PROBE code | Repository and branch of this code. |
 
-The run registers two endpoints and lives until it is canceled:
-
-- `probe-<run slug>`: read-only dashboard, safe to share.
-- `probe-admin-<run slug>`: same view plus `Run all`, `Rerun test` and `Cancel run`.
-
-Nothing runs at deployment. Only tests whose `platform` and `user` match the run's own
-can be executed from it.
+`pw endpoints list` shows the two URLs. Cancel the run to take the dashboards down.
 
 ## Run tests
 
-From the admin dashboard: `Run all` starts every test of this platform and user;
-opening a test and pressing `Rerun test` starts that one. A test shows as running until
-its record is written; the results reach the bucket right after. A request that overlaps
-a run still in progress is refused.
+Any of these runs tests. All of them write to the bucket, and the dashboard shows the
+new results after `Refresh`.
 
-From a shell with the `pw` CLI authenticated (the context selects platform and user):
+- **Admin dashboard**: `Run all`, or open a test and press `Rerun test`. Results show up
+  without a refresh, since this runner writes the dashboard's own copy too.
+- **GitHub action "Run PROBE tests"**: dispatch it with `all` or a list of test files,
+  or let the nightly schedule run everything. It waits for the platform run and turns
+  red when a test fails. For the schedule, set the repository variables
+  `PROBE_PLATFORM`, `PROBE_RESOURCE`, `PROBE_BUCKET` and `PROBE_BUCKET_PATH`
+  (defaults: `activate.parallel.works`, `pw://alvaro/gcpsmall`, `pw://alvaro/gcpbucket`,
+  `probe/results`). The platform API keys are the repository secrets
+  `ACTIVATE_PARALLEL_WORKS` and `ACTIVATE_HPC_MIL`.
+- **By hand on the platform**: `pw workflows run --trust -i inputs.json
+  /abs/path/workflow/run-tests.yaml`, with `selection` set to `all` or to test files
+  relative to the tests directory.
+- **Command line** on a machine with the `pw` CLI authenticated (the context selects
+  platform and user):
 
 ```bash
-python3 -m probe list --tests tests                                     # validate the definitions
-python3 -m probe run --tests tests --results results --bucket pw://alvaro/gcpbucket/probe/results
-python3 -m probe run --tests tests --results results --filter webshell  # id substring or glob
-python3 -m probe run --tests tests --results results --id activate.parallel.works/alvaro/webshell/gcpsmall-controller
-python3 -m probe run --tests tests --results results --dry-run          # list what would run
-python3 -m probe run --tests tests --results results --keep             # leave endpoints running
+python3 -m probe list --tests tests                                 # validate the definitions
+python3 -m probe run --tests tests --results results --bucket pw://alvaro/gcpbucket/probe/results --all
+python3 -m probe run --tests tests --results results --bucket pw://alvaro/gcpbucket/probe/results \
+    --test activate.parallel.works/alvaro/webshell/gcpsmall-controller.json
+python3 -m probe run --tests tests --results results --dry-run     # list what would run
+python3 -m probe run --tests tests --results results --keep        # leave endpoints running
 python3 -m probe serve --results results --tests tests --port 8080 [--admin] [--bucket URI]
 ```
 
-Without `--bucket` the results stay in the local results directory. Exit codes: 0 every
-test passed or was skipped, 1 a test failed, 2 an invalid definition or a failed bucket
-upload. `PW_PLATFORM_HOST` and `PW_USER` override the `pw` context; the platform sets
-them inside a workflow run. Interrupting the runner cancels its platform runs and
-records them as failed.
+`--filter` (id substring or glob) and `--id` (exact id) are the other selectors. Without
+`--bucket` the results stay in the local results directory. Exit codes: 0 every test
+passed or was skipped, 1 a test failed, 2 an invalid definition, a bad selection or a
+failed bucket transfer. `PW_PLATFORM_HOST` and `PW_USER` override the `pw` context; the
+platform sets them inside a workflow run. Interrupting the runner cancels its platform
+runs and records them as failed. Only tests whose `platform` and `user` match the runner's
+own are executed.
 
 ## Test definitions
 
 One self-contained JSON file per test. The test id is
-`<platform>/<user>/<workflow_name>/<name>`, built from the file's fields alone; where
-the file sits does not matter. The recommended location is
-`<platform>/<user>/<workflow_name>/<name>.json`, and `python3 -m probe list` notes files
-found elsewhere. Two files with the same id are an error, as is any unknown key.
+`<platform>/<user>/<workflow_name>/<name>`, built from the file's fields alone; the
+file's location does not matter, but `<platform>/<user>/<workflow_name>/<name>.json` is
+the recommended one and `python3 -m probe list` notes files found elsewhere. Two files
+with the same id are an error, as is any unknown key.
 
 ```json
 {
@@ -103,31 +132,32 @@ found elsewhere. Two files with the same id are an error, as is any unknown key.
 Every test is judged the same way: it passes when its run completes. A workflow fails
 its run when its service is not healthy and completes once it is. After the verdict
 PROBE deletes every endpoint named `*-<run slug>`; a workflow that registers none has
-nothing to delete. Before launching, PROBE checks the target with
-`pw cluster ls` (or `pw kube ls`); a resource that is off or not listed skips the test.
-The target comes from `inputs.resource` or `inputs.cluster.resource` as a name, a
-`pw://user/name` URI or a resource object; `scheduler: true` marks a compute-node test.
-
-Tests can live in a separate repository, for example a deployment's own git server.
-Point the workflow's `Test definitions` inputs at it; the layout is the same.
+nothing to delete. Before launching, PROBE checks the target with `pw cluster ls` (or
+`pw kube ls`); a resource that is off or not listed skips the test. The target comes
+from `inputs.resource` or `inputs.cluster.resource` as a name, a `pw://user/name` URI or
+a resource object; `scheduler: true` marks a compute-node test.
 
 ## Results
 
 ```
-<bucket>/<path>/<platform>/<user>/<workflow_name>/<test>/
-|-- records.jsonl                         one line per execution, append only
-|-- 2026-09-21T150902Z_swift-falcon/      <start time>_<run slug>
+<bucket>/<path>/<platform>/<user>/<workflow_name>/<name>/
+|-- 2026-09-21T150902Z_swift-falcon/      one directory per execution: <start time>_<run slug>
+|   |-- record.json                       the record (below)
 |   |-- run.log                           what PROBE did and saw, with timestamps
 |   |-- launch.json                       the run object returned by pw workflows run
 |   |-- view.json                         the last pw workflows runs view of the run
 |   `-- errors.txt                        pw workflows runs errors, failed runs only
-`-- 2026-09-21T150902Z_launch-failed/     a launch that never produced a run
+|-- 2026-09-21T150902Z_skip/              a skipped execution: record.json and run.log
+`-- 2026-09-21T150902Z_launch-failed/     a launch that produced no run
 ```
 
-The current state of a test is the last line of its `records.jsonl`; the history is
-every line. Skipped tests append a line but no artifact directory. Nothing is ever
-overwritten and readers ignore malformed lines. One deployment per bucket path: two
-runners writing the same `records.jsonl` would overwrite each other.
+The current state of a test is the record of its newest execution directory; the
+history is all of them. Every execution writes only its own directory and uploads it
+when it finishes, so runners started from the dashboard, from GitHub or by hand can
+share one bucket without overwriting each other. A directory without `record.json` is
+an execution still in progress. Readers ignore malformed records. To reclaim space,
+delete the large files of old executions but keep `record.json`, or the history loses
+that execution.
 
 ```json
 {
@@ -167,10 +197,10 @@ Every key is always present; not applicable or unknown is null. A regression is 
 
 Summary tiles (tests, passing, failing, skipped, regressions, last suite run), the
 compatibility matrix of workflows by system, the table of tests with their recent
-history, and the suite runs. Filters and the selected test are kept in the URL, so a
-view can be shared. A test opens into its history, the `run.log` and other artifacts of
-every execution, its definition and its current record. The pages use system fonts and
-load nothing from the internet.
+history, and the suite runs. `Refresh` pulls the results from the bucket. Filters and
+the selected test are kept in the URL, so a view can be shared. A test opens into its
+history, the `run.log` and other artifacts of every execution, its definition and its
+current record. The pages use system fonts and load nothing from the internet.
 
 ## Development
 

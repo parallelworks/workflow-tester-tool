@@ -106,8 +106,8 @@ class ProbeCase(unittest.TestCase):
         return path
 
     def records(self, test_id):
-        from probe.results import RECORDS_FILE, read_records
-        return read_records(self.results_dir / test_id / RECORDS_FILE)
+        from probe.results import test_records
+        return test_records(self.results_dir / test_id)
 
     def calls(self):
         path = self.state_dir / "calls.log"

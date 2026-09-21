@@ -36,6 +36,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="only test ids matching this glob or substring (repeatable)")
     run.add_argument("--id", action="append", default=[], metavar="TEST_ID",
                      help="only this exact test id (repeatable)")
+    run.add_argument("--test", action="append", default=[], metavar="FILE",
+                     help="only this test definition file, relative to --tests (repeatable)")
+    run.add_argument("--all", action="store_true",
+                     help="every test of this platform and user; the default when no test is selected")
     run.add_argument("--bucket", metavar="URI", default=os.environ.get("PROBE_RESULTS_BUCKET") or None,
                      help="bucket path (pw://<user>/<bucket>/<path>) that receives each test's "
                           "records and artifacts as soon as it finishes (default: PROBE_RESULTS_BUCKET)")
@@ -66,7 +70,8 @@ def main(argv=None) -> int:
             tests_dir=Path(args.tests), results_dir=Path(args.results).resolve(),
             platform=args.platform, user=args.user, suite_run=args.suite_run,
             workers=args.workers, poll_s=max(1, args.poll_interval), timeout_s=args.timeout,
-            keep=args.keep, dry_run=args.dry_run, filters=args.filter, ids=args.id, bucket=args.bucket,
+            keep=args.keep, dry_run=args.dry_run, filters=args.filter, ids=args.id,
+            test_files=args.test, run_all=args.all, bucket=args.bucket,
         )
         return run_suite(opts)
     if args.command == "serve":
