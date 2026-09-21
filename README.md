@@ -6,8 +6,6 @@ dashboard. Each test launches one workflow from a git repository with fixed inpu
 one system, waits for the verdict, cleans up, and appends a record. Runs repeat on a
 schedule, so a workflow that stops working on a system shows up as a regression.
 
-PROBE is Milestone 0002 of the FY27 HPCMP prototype extension.
-
 ## How it works
 
 ```
