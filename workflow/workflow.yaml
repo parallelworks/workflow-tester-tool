@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
-# PROBE: runs the compatibility tests defined for this platform and user, keeps
-# their results in a bucket, and serves the compatibility dashboard through pw
-# endpoints for as long as this run lives. Cancel the run to take it down.
+# PROBE: serves the compatibility dashboards for this platform and user. Tests are
+# run from the admin dashboard; every test's results go to the bucket as soon as it
+# finishes. The run lives until it is canceled.
 permissions:
   - '*'
 env:
@@ -42,60 +42,29 @@ jobs:
           cp -a "tests-src/${DIR}/." tests/
           rm -rf tests-src
           echo "::notice::$(find tests -name '*.json' | wc -l) test definition file(s) staged"
-          python3 -m probe list --tests tests --platform "${PW_PLATFORM_HOST}" --user "${PW_USER}" || echo "::warning::Some test definitions are invalid; see above"
-      - name: Restore results
+          python3 -m probe list --tests tests --platform "${PW_PLATFORM_HOST}" --user "${PW_USER}" \
+            || echo "::warning::Some test definitions are invalid; see above"
+      - name: Restore results from the bucket
         run: |
           cd ${PW_PARENT_JOB_DIR}
           export PATH=$HOME/pw:$PATH
           BUCKET="${{ inputs.results.bucket.uri }}"
-          BUCKET_PATH="${{ inputs.results.path }}"
-          mkdir -p results
           case "${BUCKET}" in
-            ''|undefined|pw://) echo "::notice::No results bucket configured; results stay in ${PW_PARENT_JOB_DIR}/results for the life of this run" ;;
-            *)
-              pw buckets cp -r "${BUCKET}/${BUCKET_PATH#/}/" results/ \
-                && echo "::notice::Results restored from ${BUCKET}/${BUCKET_PATH#/}" \
-                || echo "::warning::Nothing restored from ${BUCKET}/${BUCKET_PATH#/}; starting with an empty results tree" ;;
+            ''|undefined|pw://) echo "::error::A results bucket is required"; exit 1 ;;
           esac
-  run:
-    if: ${{ inputs.run_tests }}
-    needs:
-      - setup
-    ssh:
-      remoteHost: ${{ inputs.resource.ip }}
-    steps:
-      - name: Run the suite
-        run: |
-          cd ${PW_PARENT_JOB_DIR}
-          export PATH=$HOME/pw:$PATH
-          BUCKET="${{ inputs.results.bucket.uri }}"
-          BUCKET_PATH="${{ inputs.results.path }}"
-          INTERVAL="${{ inputs.schedule.interval_hours }}"
-          FILTER="${{ inputs.filter }}"
-          case "${FILTER}" in ''|undefined) FILTER_ARGS="" ;; *) FILTER_ARGS="--filter ${FILTER}" ;; esac
-          case "${INTERVAL}" in ''|undefined) INTERVAL=0 ;; esac
-          sync_results() {
-            case "${BUCKET}" in
-              ''|undefined|pw://) ;;
-              *) pw buckets cp -r results/ "${BUCKET}/${BUCKET_PATH#/}/" \
-                   && echo "::notice::Results synced to ${BUCKET}/${BUCKET_PATH#/}" \
-                   || echo "::warning::Results sync to ${BUCKET}/${BUCKET_PATH#/} failed" ;;
-            esac
-          }
-          while :; do
-            echo "::group::PROBE suite $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            # Test failures are data, not workflow failures: the job stays green so
-            # the dashboard keeps serving them.
-            python3 -u -m probe run --tests tests --results results ${FILTER_ARGS} \
-              || echo "::warning::probe run exited $? (failing tests or invalid definitions); see the dashboard"
-            echo "::endgroup::"
-            sync_results
-            [ "${INTERVAL}" -gt 0 ] 2>/dev/null || break
-            echo "::notice::Next suite run in ${INTERVAL} hour(s)"
-            sleep $(( INTERVAL * 3600 ))
-          done
-  serve:
-    if: ${{ inputs.serve_dashboard }}
+          RESULTS="${BUCKET%/}/${{ inputs.results.path }}"
+          RESULTS="${RESULTS%/}"
+          mkdir -p results
+          if out=$(pw buckets cp -r "${RESULTS}/" results/ 2>&1); then
+            echo "::notice::Results restored from ${RESULTS}"
+          elif echo "${out}" | grep -q "no objects found"; then
+            echo "::notice::No results yet at ${RESULTS}"
+          else
+            echo "${out}"
+            echo "::error::Could not restore results from ${RESULTS}"
+            exit 1
+          fi
+  dashboard:
     needs:
       - setup
     ssh:
@@ -105,11 +74,11 @@ jobs:
         run: |
           cd ${PW_PARENT_JOB_DIR}
           export PATH=$HOME/pw:$PATH
+          RESULTS="${{ inputs.results.bucket.uri }}"; RESULTS="${RESULTS%/}/${{ inputs.results.path }}"
           echo "::notice::Dashboard endpoint probe-${PW_RUN_SLUG}"
           pw endpoints run --name probe-${PW_RUN_SLUG} -o text -- \
-            python3 -u -m probe serve --port {port} --prefix {path} --results results --tests tests
-  serve_admin:
-    if: ${{ inputs.serve_dashboard && inputs.admin_dashboard }}
+            python3 -u -m probe serve --port {port} --prefix {path} --results results --tests tests --bucket "${RESULTS%/}"
+  admin_dashboard:
     needs:
       - setup
     ssh:
@@ -119,9 +88,10 @@ jobs:
         run: |
           cd ${PW_PARENT_JOB_DIR}
           export PATH=$HOME/pw:$PATH
+          RESULTS="${{ inputs.results.bucket.uri }}"; RESULTS="${RESULTS%/}/${{ inputs.results.path }}"
           echo "::notice::Admin dashboard endpoint probe-admin-${PW_RUN_SLUG}"
           pw endpoints run --name probe-admin-${PW_RUN_SLUG} -o text -- \
-            python3 -u -m probe serve --admin --port {port} --prefix {path} --results results --tests tests
+            python3 -u -m probe serve --admin --port {port} --prefix {path} --results results --tests tests --bucket "${RESULTS%/}"
 'on':
   execute:
     inputs:
@@ -130,19 +100,17 @@ jobs:
         label: Resource
         include-workspace: true
         tooltip: |
-          Where PROBE itself runs: the user workspace or the login node of a
-          connected cluster. It launches the tests from here with the pw CLI and
-          hosts the dashboard.
+          Where PROBE runs: the user workspace or the login node of a connected
+          cluster. Tests are launched from here with the pw CLI.
       tests:
         type: group
         label: Test definitions
-        tooltip: Git repository, branch and directory holding the test definition files.
+        tooltip: Git repository, branch and directory of the test definition files.
         items:
           repo:
             type: string
             label: Repository
             default: https://github.com/parallelworks/workflow-tester-tool.git
-            tooltip: Git URL of the repository that holds the test definitions.
           branch:
             type: string
             label: Branch
@@ -152,63 +120,26 @@ jobs:
             label: Directory
             default: tests
             tooltip: |
-              Directory inside the repository. Every *.json file below it is a
-              test definition; only the ones whose platform and user match this
-              run are executed.
-      filter:
-        type: string
-        label: Test filter
-        optional: true
-        default: ''
-        tooltip: |
-          Optional. Only run tests whose id (<platform>/<user>/<workflow_name>/<test>)
-          contains this text or matches this glob, e.g. jupyterlab or */jean-*.
+              Every *.json file below this directory is a test definition. Only the
+              ones whose platform and user match this run can be executed.
       results:
         type: group
         label: Results
-        tooltip: Results are restored from this bucket before the suite and synced back after it.
+        tooltip: |
+          The bucket holds the results. They are restored when the run starts
+          and updated after every test.
         items:
           bucket:
             type: bucket
             label: Bucket
-            optional: true
-            tooltip: Leave empty to keep results only for the life of this run.
           path:
             type: string
             label: Path in bucket
             default: probe/results
-      schedule:
-        type: group
-        label: Schedule
-        items:
-          interval_hours:
-            type: number
-            label: Repeat every (hours)
-            default: 0
-            min: 0
-            tooltip: |
-              0 runs the suite once. A positive number repeats it every that many
-              hours for as long as this run lives; the dashboard stays up in between.
-      run_tests:
-        type: boolean
-        label: Run tests
-        default: true
-        tooltip: No serves the dashboard of previously stored results without running anything.
-      serve_dashboard:
-        type: boolean
-        label: Serve dashboard
-        default: true
-        tooltip: Yes registers the dashboard as endpoint probe-<run slug>. It lives until this run is canceled.
-      admin_dashboard:
-        type: boolean
-        label: Serve admin dashboard
-        default: true
-        hidden: ${{ inputs.serve_dashboard == false }}
-        tooltip: Yes also registers probe-admin-<run slug>, where tests can be rerun or their runs canceled.
       code:
         type: group
         label: PROBE code
-        tooltip: Where the PROBE runner and dashboard code is fetched from.
+        tooltip: Where the runner and dashboard code is fetched from.
         items:
           repo:
             type: string

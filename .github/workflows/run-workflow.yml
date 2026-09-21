@@ -1,4 +1,4 @@
-name: Run PROBE
+name: Deploy PROBE
 
 on:
   workflow_dispatch:
@@ -35,14 +35,9 @@ on:
         required: false
         default: 'tests'
         type: string
-      filter:
-        description: 'Optional test id filter (substring or glob)'
-        required: false
-        default: ''
-        type: string
       bucket:
-        description: 'Results bucket URI (empty keeps results only for the life of the run)'
-        required: false
+        description: 'Results bucket URI'
+        required: true
         default: 'pw://alvaro/gcpbucket'
         type: string
       bucket_path:
@@ -50,24 +45,9 @@ on:
         required: false
         default: 'probe/results'
         type: string
-      interval_hours:
-        description: 'Repeat the suite every N hours (0 = once)'
-        required: false
-        default: '0'
-        type: string
-      run_tests:
-        description: 'Run the tests'
-        required: false
-        default: true
-        type: boolean
-      serve_dashboard:
-        description: 'Serve the dashboard'
-        required: false
-        default: true
-        type: boolean
 
 jobs:
-  run-workflow:
+  deploy:
     runs-on: ubuntu-latest
     env:
       PW_PLATFORM_HOST: ${{ inputs.platform }}
@@ -92,26 +72,18 @@ jobs:
       - name: Create inputs.json
         run: |
           python3 - <<'EOF'
-          import json, os
-          bucket = "${{ inputs.bucket }}".strip()
+          import json
           inputs = {
               "resource": "${{ inputs.resource }}",
               "tests": {"repo": "${{ inputs.tests_repo }}", "branch": "${{ inputs.tests_branch }}",
                         "directory": "${{ inputs.tests_directory }}"},
-              "filter": "${{ inputs.filter }}",
-              "results": {"path": "${{ inputs.bucket_path }}"},
-              "schedule": {"interval_hours": int("${{ inputs.interval_hours }}" or 0)},
-              "run_tests": "${{ inputs.run_tests }}" == "true",
-              "serve_dashboard": "${{ inputs.serve_dashboard }}" == "true",
-              "admin_dashboard": "${{ inputs.serve_dashboard }}" == "true",
+              "results": {"bucket": "${{ inputs.bucket }}", "path": "${{ inputs.bucket_path }}"},
           }
-          if bucket:
-              inputs["results"]["bucket"] = bucket
           json.dump(inputs, open("inputs.json", "w"), indent=2)
           print(json.dumps(inputs, indent=2))
           EOF
 
-      - name: Run PROBE
+      - name: Deploy PROBE
         run: |
           pw workflows run --trust \
             --name "ci: ${{ github.workflow }} #${{ github.run_number }}" \

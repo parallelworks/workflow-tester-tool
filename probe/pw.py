@@ -192,6 +192,10 @@ class Pw:
     def ssh(self, resource: str, command: str, timeout: int = 120) -> Completed:
         return self._run("ssh", resource, command, timeout=timeout)
 
+    def bucket_cp(self, source: str, destination: str, recursive: bool = False) -> Completed:
+        args = ["buckets", "cp"] + (["-r"] if recursive else []) + [source, destination]
+        return self._run(*args, timeout=600)
+
 
 def repo_url(repo: str) -> str:
     if re.match(r"^[a-z][a-z0-9+.-]*://", repo) or repo.startswith("git@"):

@@ -62,6 +62,7 @@ class Options:
     dry_run: bool = False
     filters: List[str] = field(default_factory=list)
     ids: List[str] = field(default_factory=list)
+    bucket: Optional[str] = None
 
 
 class Console:
@@ -144,6 +145,7 @@ class Suite:
         self._checkout_count = 0
         self._locks: Dict[Tuple, threading.Lock] = {}
         self.workdir = Path(tempfile.mkdtemp(prefix="probe-"))
+        self.sync_failures = 0
 
     def close(self) -> None:
         shutil.rmtree(str(self.workdir), ignore_errors=True)
@@ -214,6 +216,28 @@ class Suite:
     def lock(self, key: Tuple) -> threading.Lock:
         with self._lock:
             return self._locks.setdefault(key, threading.Lock())
+
+    def sync(self, test_dir: Path, artifact: Optional[Path], log) -> None:
+        """Upload a test's new artifact directory and its records.jsonl to the
+        bucket, the ground truth for results. The records file goes last so a
+        record never points at artifacts the bucket does not hold yet."""
+        if not self.opts.bucket:
+            return
+        base = self.opts.bucket.rstrip("/")
+        prefix = "%s/%s" % (base, test_dir.relative_to(self.opts.results_dir).as_posix())
+        uploads = []
+        if artifact is not None and artifact.is_dir():
+            uploads.append((str(artifact) + "/", "%s/%s/" % (prefix, artifact.name), True))
+        uploads.append((str(test_dir / RECORDS_FILE), prefix + "/", False))
+        for source, destination, recursive in uploads:
+            r = self.pw.bucket_cp(source, destination, recursive)
+            if r.rc != 0:
+                with self._lock:
+                    self.sync_failures += 1
+                log("bucket sync failed: %s -> %s: %s" % (source, destination, r.one_line()))
+                self.console("bucket sync failed for %s: %s" % (prefix, r.one_line(160)))
+                return
+        log("bucket synced: %s/" % prefix)
 
 
 def format_errors(text: str) -> str:
@@ -581,6 +605,7 @@ class TestRun:
         self.test_dir.mkdir(parents=True, exist_ok=True)
         append_record(self.test_dir / RECORDS_FILE, record)
         self.log("record: %s" % json.dumps(record["outcome"]))
+        self.suite.sync(self.test_dir, self.art, self.log)
         self.log.close()
         return record
 
@@ -666,7 +691,7 @@ def run_suite(opts: Options, console: Optional[Console] = None) -> int:
         console("nothing to run")
         return 2 if errors else 0
 
-    console("results: %s" % opts.results_dir)
+    console("results: %s%s" % (opts.results_dir, ("  bucket: " + opts.bucket) if opts.bucket else "  (no bucket: results stay local)"))
     install_signal_handlers(console)
     records: List[dict] = []
     try:
@@ -688,6 +713,8 @@ def run_suite(opts: Options, console: Optional[Console] = None) -> int:
         outcome = record["outcome"]
         if outcome["status"] == "fail":
             console("  FAIL %s  at %s: %s" % (record["test"]["id"], outcome["failed_at"], outcome["error"]))
-    if errors:
+    if suite.sync_failures:
+        console("%d bucket sync failure(s): the bucket is missing results of this run" % suite.sync_failures)
+    if errors or suite.sync_failures:
         return 2
     return 1 if counts["fail"] else 0

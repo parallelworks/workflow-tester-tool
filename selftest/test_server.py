@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 
 from probe import results
-from probe.server import Config, build_state, make_server
+from probe.server import Config, build_state, conflicts, make_server, runner_command
 from selftest.helpers import ProbeCase, definition
 
 TEST_ID = "activate.parallel.works/alvaro/webshell/gcpsmall-controller"
@@ -128,6 +128,7 @@ class ServerTests(ProbeCase):
         self.assertEqual(status, 200)
         data = json.loads(body)
         self.assertFalse(data["admin"])
+        self.assertIsNone(data["bucket"])
         ids = [t["id"] for t in data["tests"]]
         self.assertEqual(ids, ["activate.parallel.works/alvaro/webshell/gcpsmall-compute", TEST_ID])
         controller = data["tests"][1]
@@ -188,6 +189,20 @@ class ServerTests(ProbeCase):
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(body)["ok"])
         self.cfg.prefix = ""
+
+    def test_runner_command_and_conflicts(self):
+        cfg = Config(self.results_dir, self.tests_dir, bucket="pw://alvaro/gcpbucket/probe/results/")
+        command = runner_command(cfg, [TEST_ID])
+        self.assertEqual(command[1:4], ["-m", "probe", "run"])
+        self.assertIn("--bucket", command)
+        self.assertEqual(command[command.index("--bucket") + 1], "pw://alvaro/gcpbucket/probe/results")
+        self.assertEqual(command[-2:], ["--id", TEST_ID])
+        self.assertNotIn("--bucket", runner_command(Config(self.results_dir, self.tests_dir), []))
+        self.assertFalse(conflicts([], []))
+        self.assertFalse(conflicts([{"a"}], ["b"]))
+        self.assertTrue(conflicts([{"a"}], ["a", "b"]))
+        self.assertTrue(conflicts([{"a"}], []))
+        self.assertTrue(conflicts([None], ["b"]))
 
     def test_admin_actions_refused_when_read_only(self):
         status, data = self.post("/api/run", {"ids": [TEST_ID]})

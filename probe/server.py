@@ -13,10 +13,11 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 from urllib.parse import unquote, urlparse
 
 from . import __version__
@@ -32,12 +33,36 @@ TEXT_TYPES = {".log": "text/plain", ".txt": "text/plain", ".json": "application/
 
 class Config:
     def __init__(self, results_dir: Path, tests_dir: Path, web_dir: Path = WEB_DIR,
-                 prefix: str = "", admin: bool = False):
+                 prefix: str = "", admin: bool = False, bucket: Optional[str] = None):
         self.results_dir = results_dir.resolve()
         self.tests_dir = tests_dir.resolve()
         self.web_dir = web_dir.resolve()
         self.prefix = ("/" + prefix.strip("/")) if prefix and prefix.strip("/") else ""
         self.admin = admin
+        self.bucket = bucket.rstrip("/") if bucket else None
+        # runners started from the admin dashboard: (process, ids or None for all)
+        self.active_runs: list = []
+        self.lock = threading.Lock()
+
+
+def runner_command(cfg: Config, ids: List[str]) -> List[str]:
+    command = [sys.executable, "-m", "probe", "run",
+               "--tests", str(cfg.tests_dir), "--results", str(cfg.results_dir)]
+    if cfg.bucket:
+        command += ["--bucket", cfg.bucket]
+    for test_id in ids:
+        command += ["--id", test_id]
+    return command
+
+
+def conflicts(active: List[Optional[Set[str]]], ids: List[str]) -> bool:
+    """True when a requested run overlaps a run still in progress. None means
+    every test of the platform and user."""
+    requested = set(ids) if ids else None
+    for running in active:
+        if running is None or requested is None or (running & requested):
+            return True
+    return False
 
 
 def now_iso() -> str:
@@ -86,6 +111,7 @@ def build_state(cfg: Config) -> dict:
         "version": __version__,
         "admin": cfg.admin,
         "results_dir": str(cfg.results_dir),
+        "bucket": cfg.bucket,
         "tests": items,
         "suite_runs": suite_runs(all_records),
         "definition_errors": errors,
@@ -244,15 +270,16 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json({"error": "'ids' must be a list of test ids"}, 400)
         if not ids and not body.get("all"):
             return self._json({"error": "pass 'ids' or 'all': true"}, 400)
-        command = [sys.executable, "-m", "probe", "run",
-                   "--tests", str(self.cfg.tests_dir), "--results", str(self.cfg.results_dir)]
-        for test_id in ids:
-            command += ["--id", test_id]
-        try:
-            process = subprocess.Popen(command, cwd=str(self.cfg.web_dir.parent),
-                                       stdin=subprocess.DEVNULL, start_new_session=True)
-        except OSError as exc:
-            return self._json({"error": "could not start the runner: %s" % exc}, 500)
+        with self.cfg.lock:
+            self.cfg.active_runs = [(p, s) for p, s in self.cfg.active_runs if p.poll() is None]
+            if conflicts([s for _, s in self.cfg.active_runs], ids):
+                return self._json({"error": "a run of these tests is already in progress"}, 409)
+            try:
+                process = subprocess.Popen(runner_command(self.cfg, ids), cwd=str(self.cfg.web_dir.parent),
+                                           stdin=subprocess.DEVNULL, start_new_session=True)
+            except OSError as exc:
+                return self._json({"error": "could not start the runner: %s" % exc}, 500)
+            self.cfg.active_runs.append((process, set(ids) if ids else None))
         return self._json({"started": True, "pid": process.pid, "ids": ids, "all": not ids})
 
     def _post_cancel(self):
@@ -316,7 +343,8 @@ def serve(cfg: Config, host: Optional[str], port: int) -> None:
     print("PROBE dashboard %s on %s port %d (%s)" % (
         __version__, server.server_address[0], server.server_address[1],
         "admin" if cfg.admin else "read-only"), flush=True)
-    print("  results %s\n  tests   %s\n  prefix  %s" % (cfg.results_dir, cfg.tests_dir, cfg.prefix or "/"), flush=True)
+    print("  results %s\n  bucket  %s\n  tests   %s\n  prefix  %s" % (
+        cfg.results_dir, cfg.bucket or "none", cfg.tests_dir, cfg.prefix or "/"), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

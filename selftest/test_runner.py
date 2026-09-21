@@ -335,6 +335,47 @@ class RunnerTests(RunnerCase):
         self.assertEqual(len(dirs), 1, launches)
 
 
+class BucketTests(RunnerCase):
+    BUCKET = "pw://alvaro/gcpbucket/probe/results"
+
+    def cps(self):
+        return [c.split("buckets cp ", 1)[1] for c in self.calls() if " buckets cp " in c]
+
+    def test_each_test_syncs_its_results(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition())
+        self.write_test("webshell/gcpgpu-controller.json", definition(resource="pw://alvaro/gcpgpu"))
+        code, out = self.run_suite(bucket=self.BUCKET + "/")
+        self.assertEqual(code, 0, out)
+        art = self.artifact_dirs(CONTROLLER)[0]
+        cps = self.cps()
+        artifact_cp = "-r %s/%s/%s/ %s/%s/%s/" % (self.results_dir, CONTROLLER, art, self.BUCKET, CONTROLLER, art)
+        records_cp = "%s/%s/records.jsonl %s/%s/" % (self.results_dir, CONTROLLER, self.BUCKET, CONTROLLER)
+        self.assertIn(artifact_cp, cps)
+        self.assertIn(records_cp, cps)
+        self.assertLess(cps.index(artifact_cp), cps.index(records_cp))
+        skipped = "activate.parallel.works/alvaro/webshell/gcpgpu-controller"
+        self.assertIn("%s/%s/records.jsonl %s/%s/" % (self.results_dir, skipped, self.BUCKET, skipped), cps)
+        self.assertFalse(any(c.startswith("-r") and skipped in c for c in cps))
+        log = (self.results_dir / CONTROLLER / art / "run.log").read_text()
+        self.assertIn("bucket synced: %s/%s/" % (self.BUCKET, CONTROLLER), log)
+
+    def test_no_bucket_means_no_upload(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition())
+        code, out = self.run_suite()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.cps(), [])
+        self.assertIn("no bucket", out)
+
+    def test_sync_failure_exits_2(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition())
+        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}}, "bucket_fail": True})
+        code, out = self.run_suite(bucket=self.BUCKET)
+        self.assertEqual(code, 2)
+        self.assertIn("bucket sync failed", out)
+        self.assertIn("1 bucket sync failure(s)", out)
+        self.assertEqual(self.records(CONTROLLER)[0]["outcome"]["status"], "pass")
+
+
 class FormatTests(unittest.TestCase):
     def test_format_errors(self):
         text = json.dumps({"slug": "s", "status": "error", "summary": "1 job(s) failed",

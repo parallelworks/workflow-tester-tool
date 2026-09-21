@@ -270,7 +270,7 @@ function renderMeta(data) {
   const running = data.tests.filter((t) => t.running).length;
   el["top-meta"].textContent = `Updated ${fmtDate(data.generated_at)}${running ? ` · ${running} running` : ""}${data.admin ? " · admin" : ""}`;
   el["foot-version"].textContent = `PROBE ${data.version}`;
-  el["foot-results"].textContent = data.results_dir ? `Results: ${data.results_dir}` : "";
+  el["foot-results"].textContent = data.bucket ? `Results bucket: ${data.bucket}` : (data.results_dir ? `Results: ${data.results_dir} (no bucket)` : "");
   el["run-all"].hidden = !data.admin;
   if (data.definition_errors && data.definition_errors.length) {
     notice(`${data.definition_errors.length} invalid test definition(s): ${data.definition_errors.join("; ")}`, "warn");
