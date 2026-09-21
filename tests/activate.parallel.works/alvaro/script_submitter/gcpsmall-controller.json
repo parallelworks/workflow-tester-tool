@@ -1,0 +1,21 @@
+{
+  "platform": "activate.parallel.works",
+  "user": "alvaro",
+  "workflow_name": "script_submitter",
+  "workflow": {
+    "repo": "github.com/parallelworks/workflows",
+    "path": "workflows/script_submitter/v3.6/general.yaml",
+    "ref": "canary"
+  },
+  "kind": "batch",
+  "timeout_s": 900,
+  "inputs": {
+    "resource": "pw://alvaro/gcpsmall",
+    "scheduler": false,
+    "shebang": "#!/bin/bash",
+    "rundir": "",
+    "use_existing_script": false,
+    "define_cleanup_script": false,
+    "script": "echo \"$(date) PROBE canary on ${HOSTNAME} in ${PWD}\"\nsleep 5\necho done"
+  }
+}

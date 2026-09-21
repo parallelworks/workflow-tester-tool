@@ -1,227 +1,168 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Workflow Test Dashboard</title>
-  <meta name="description" content="Test results dashboard for PW workflow and session tests.">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROBE</title>
+  <meta name="description" content="Workflow compatibility results across connected systems">
   <script>
     (function () {
-      // Derive the directory path of this page and inject a <base> tag so that
-      // relative asset hrefs and relative fetch() calls all resolve correctly
-      // when the dashboard is served behind a reverse proxy with a URL prefix
-      // (e.g. https://activate.parallel.works/me/session/alvaro/test/).
-      function deriveBasePath(pathname) {
-        var path = pathname || "/";
-        if (path.indexOf("/index.html") > -1) {
-          var lastSlash = path.lastIndexOf("/");
-          return (lastSlash >= 0 ? path.slice(0, lastSlash + 1) : "/");
-        }
-        // Append trailing slash so relative api/results fetch resolves under
-        // this page, not its parent (e.g. /me/session/user/name → /me/session/user/name/).
-        return path.endsWith("/") ? path : path + "/";
-      }
-      var path = deriveBasePath(window.location.pathname || "/");
+      // The dashboard is served at "/" behind a subdomain endpoint or under a
+      // prefix behind a path-based one. A <base> built from the page location
+      // makes every relative URL (styles, script, api/...) resolve either way.
+      var path = window.location.pathname || "/";
+      if (/\/index\.html$/.test(path)) path = path.slice(0, path.lastIndexOf("/") + 1);
+      if (!path.endsWith("/")) path += "/";
       var base = document.createElement("base");
       base.href = window.location.origin + path;
-      document.documentElement.setAttribute("data-base-path", path);
       document.head.appendChild(base);
+      var theme = null;
+      try { theme = window.localStorage.getItem("probe-theme"); } catch (e) { theme = null; }
+      if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
     })();
   </script>
-  <script>
-    (function () {
-      try {
-        var saved = window.localStorage.getItem("wf-test-theme");
-        document.documentElement.dataset.theme = saved || "dark";
-      } catch (e) {
-        document.documentElement.dataset.theme = "dark";
-      }
-    })();
-  </script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="assets/css/styles.css" />
+  <link rel="stylesheet" href="styles.css">
 </head>
-
 <body>
-  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="top">
+    <div class="brand">
+      <span class="brand-mark">PROBE</span>
+      <span class="brand-sub">Workflow compatibility across connected systems</span>
+    </div>
+    <div class="top-meta" id="top-meta" aria-live="polite"></div>
+    <div class="top-actions">
+      <button id="run-all" class="btn" type="button" hidden>Run all</button>
+      <button id="refresh" class="btn" type="button">Refresh</button>
+      <button id="theme" class="btn" type="button" aria-label="Toggle light and dark theme">Theme</button>
+    </div>
+  </header>
 
-  <div class="page">
-    <header class="hero">
+  <main id="main">
+    <div id="notice" class="notice" hidden></div>
+
+    <section class="filters" aria-label="Filters">
+      <label>Platform <select id="f-platform"><option value="">All</option></select></label>
+      <label>User <select id="f-user"><option value="">All</option></select></label>
+      <label>System <select id="f-system"><option value="">All</option></select></label>
+      <label>Workflow <select id="f-workflow"><option value="">All</option></select></label>
+      <label>Kind <select id="f-kind"><option value="">All</option></select></label>
+      <label>Status <select id="f-status"><option value="">All</option></select></label>
+      <label class="grow">Search <input id="f-search" type="search" placeholder="test id, system, slug, error"></label>
+      <label class="check"><input id="f-changes" type="checkbox"> Changes only</label>
+      <button id="f-clear" class="btn btn-quiet" type="button">Clear</button>
+    </section>
+
+    <section class="tiles" aria-label="Summary">
+      <article class="tile"><p>Tests</p><strong id="t-tests">-</strong></article>
+      <article class="tile"><p>Passing</p><strong id="t-pass">-</strong></article>
+      <article class="tile" id="tile-fail"><p>Failing</p><strong id="t-fail">-</strong></article>
+      <article class="tile"><p>Skipped</p><strong id="t-skip">-</strong></article>
+      <article class="tile" id="tile-regressions"><p>Regressions</p><strong id="t-regressions">-</strong></article>
+      <article class="tile"><p>Last suite run</p><strong id="t-last" class="tile-text">-</strong><small id="t-last-detail"></small></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Compatibility matrix</h2>
+        <p class="hint">Workflows by system. Each chip is one test; click it for details.</p>
+      </div>
+      <div class="scroll" id="matrix"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Tests</h2>
+        <p id="table-count" class="hint" aria-live="polite"></p>
+      </div>
+      <div class="scroll">
+        <table class="tests" id="tests-table">
+          <thead>
+            <tr>
+              <th scope="col">Status</th>
+              <th scope="col">Test</th>
+              <th scope="col">System</th>
+              <th scope="col">Node</th>
+              <th scope="col">Kind</th>
+              <th scope="col">History</th>
+              <th scope="col">Duration</th>
+              <th scope="col">Last run</th>
+              <th scope="col">Commit</th>
+            </tr>
+          </thead>
+          <tbody id="tests-body"><tr><td colspan="9" class="empty">Loading</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Suite runs</h2>
+        <p class="hint">One row per suite run label, newest first.</p>
+      </div>
+      <div class="scroll">
+        <table class="suites">
+          <thead>
+            <tr><th scope="col">Suite run</th><th scope="col">Started</th><th scope="col">Tests</th><th scope="col">Pass</th><th scope="col">Fail</th><th scope="col">Skip</th></tr>
+          </thead>
+          <tbody id="suites-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <aside id="drawer" class="drawer" hidden aria-label="Test details" role="dialog" aria-modal="true">
+    <div class="drawer-head">
       <div>
-        <p class="eyebrow">PARALLEL WORKS</p>
-        <h1>Workflow Test Dashboard</h1>
-        <p class="lede">Automated test results for PW workflow and session tests.</p>
+        <p class="eyebrow" id="d-workflow"></p>
+        <h2 id="d-title"></h2>
+        <div class="chips" id="d-chips"></div>
       </div>
-      <div class="hero-actions">
-        <button id="refresh-btn" class="ghost-btn" title="Reload results from disk">
-          <span class="btn-icon" aria-hidden="true">↻</span>
-          <span>Refresh</span>
-        </button>
-        <button id="theme-toggle" class="theme-btn" aria-label="Toggle color theme">
-          <span class="theme-icon" aria-hidden="true">🌙</span>
-          <span class="theme-label">Dark</span>
-        </button>
+      <button id="d-close" class="btn btn-quiet" type="button" aria-label="Close">Close</button>
+    </div>
+    <div id="d-admin" class="admin-actions" hidden>
+      <button id="d-rerun" class="btn" type="button">Rerun test</button>
+      <button id="d-cancel" class="btn btn-danger" type="button">Cancel run</button>
+      <span id="d-admin-msg" class="hint"></span>
+    </div>
+    <div id="d-error" class="banner banner-error" hidden></div>
+    <dl class="facts" id="d-facts"></dl>
+    <div class="tabs" role="tablist">
+      <button class="tab is-active" data-tab="history" role="tab" type="button">History</button>
+      <button class="tab" data-tab="log" role="tab" type="button">Log</button>
+      <button class="tab" data-tab="definition" role="tab" type="button">Definition</button>
+      <button class="tab" data-tab="record" role="tab" type="button">Record</button>
+    </div>
+    <section class="tab-panel" data-panel="history">
+      <div class="scroll">
+        <table class="history">
+          <thead><tr><th>Started</th><th>Status</th><th>Failed at</th><th>Duration</th><th>Run</th><th>Commit</th><th>Suite run</th><th>Error</th></tr></thead>
+          <tbody id="d-history"></tbody>
+        </table>
       </div>
-    </header>
+    </section>
+    <section class="tab-panel" data-panel="log" hidden>
+      <div class="log-controls">
+        <label>Execution <select id="d-artifact"></select></label>
+        <label>File <select id="d-file"></select></label>
+      </div>
+      <pre class="code" id="d-log">Select an execution.</pre>
+    </section>
+    <section class="tab-panel" data-panel="definition" hidden>
+      <p class="hint" id="d-definition-path"></p>
+      <pre class="code" id="d-definition"></pre>
+    </section>
+    <section class="tab-panel" data-panel="record" hidden>
+      <pre class="code" id="d-record"></pre>
+    </section>
+  </aside>
 
-    <main id="main-content">
-      <div id="overview-content">
+  <footer class="foot">
+    <span id="foot-version">PROBE</span>
+    <span id="foot-results"></span>
+  </footer>
 
-        <!-- ── Summary cards ──────────────────────────────────── -->
-        <section class="cards" aria-label="Test summary">
-          <article class="card">
-            <p>Total tests</p>
-            <h2 id="total-tests" aria-live="polite">--</h2>
-          </article>
-          <article class="card">
-            <p>Pass rate</p>
-            <h2 id="pass-rate" aria-live="polite">--</h2>
-          </article>
-          <article class="card" id="failed-card">
-            <p>Failed</p>
-            <h2 id="failed-count" aria-live="polite">--</h2>
-          </article>
-          <article class="card">
-            <p>Last run</p>
-            <h2 id="last-run" aria-live="polite" style="font-size:var(--text-xl)">--</h2>
-          </article>
-        </section>
-
-        <!-- ── Breakdown panels ───────────────────────────────── -->
-        <section class="grid" aria-label="Test breakdown">
-          <div class="panel">
-            <h3>By status</h3>
-            <ul id="status-breakdown" class="legend" aria-label="Status counts"></ul>
-          </div>
-          <div class="panel">
-            <h3>By workflow</h3>
-            <ul id="workflow-breakdown" class="legend" aria-label="Workflow counts"></ul>
-          </div>
-          <div class="panel">
-            <h3>By kind</h3>
-            <ul id="kind-breakdown" class="legend" aria-label="Kind counts"></ul>
-          </div>
-        </section>
-
-        <!-- ── Filters ────────────────────────────────────────── -->
-        <section class="filters" aria-label="Filter options">
-          <label>
-            <span>Search</span>
-            <input type="search" id="search-input" placeholder="Test name or workflow"
-              aria-label="Search tests" />
-          </label>
-          <label>
-            <span>Status</span>
-            <select id="status-filter" aria-label="Filter by status">
-              <option value="">All</option>
-            </select>
-          </label>
-          <label>
-            <span>Workflow</span>
-            <select id="workflow-filter" aria-label="Filter by workflow">
-              <option value="">All</option>
-            </select>
-          </label>
-          <label>
-            <span>Kind</span>
-            <select id="kind-filter" aria-label="Filter by kind">
-              <option value="">All</option>
-              <option value="workflows">Workflows</option>
-              <option value="sessions">Sessions</option>
-            </select>
-          </label>
-        </section>
-
-        <!-- ── Tests table ────────────────────────────────────── -->
-        <section class="table-panel" aria-label="Test results">
-          <div class="table-head">
-            <h3>Test results</h3>
-            <p id="table-count" aria-live="polite">-- results</p>
-          </div>
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Test name <span class="th-help" title="Name of the inputs.json file for this test">ⓘ</span></th>
-                  <th scope="col">Workflow <span class="th-help" title="PW workflow being tested">ⓘ</span></th>
-                  <th scope="col">Kind <span class="th-help" title="'workflows' run to completion; 'sessions' start and cancel when healthy">ⓘ</span></th>
-                  <th scope="col">Status <span class="th-help" title="completed=pass; error/timeout/launch_failed/poll_error=fail">ⓘ</span></th>
-                  <th scope="col">Date <span class="th-help" title="When the test was started (UTC)">ⓘ</span></th>
-                  <th scope="col">Duration <span class="th-help" title="Wall-clock time from launch to terminal status">ⓘ</span></th>
-                </tr>
-              </thead>
-              <tbody id="tests-body">
-                <tr>
-                  <td colspan="6" class="placeholder">Loading…</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-      </div><!-- /#overview-content -->
-
-      <!-- ── Detail panel ───────────────────────────────────────── -->
-      <section class="detail-panel" id="test-detail" hidden aria-label="Test details">
-        <div class="detail-toolbar">
-          <button id="detail-back" class="ghost-btn detail-back" type="button">← Back to results</button>
-          <div class="detail-toolbar-meta">
-            <span id="detail-status" class="badge">--</span>
-            <span id="detail-duration" class="detail-observed">--</span>
-          </div>
-        </div>
-
-        <div class="detail-summary-card">
-          <div>
-            <p class="eyebrow">Test detail</p>
-            <h2 id="detail-title">--</h2>
-            <p id="detail-workflow" class="detail-heading"></p>
-          </div>
-          <ul class="detail-meta-list">
-            <li>
-              <span>Kind</span>
-              <strong id="detail-kind">--</strong>
-            </li>
-            <li>
-              <span>Platform</span>
-              <strong id="detail-platform">--</strong>
-            </li>
-            <li>
-              <span>Run slug</span>
-              <strong id="detail-slug">--</strong>
-            </li>
-            <li>
-              <span>Date</span>
-              <strong id="detail-date">--</strong>
-            </li>
-          </ul>
-        </div>
-
-        <!-- Error banner (shown only when there is an error) -->
-        <div id="detail-error-banner" class="status-banner" data-variant="error" hidden></div>
-
-        <!-- inputs.json viewer -->
-        <div class="panel" id="inputs-panel" style="margin-top:var(--space-6)">
-          <div class="table-head">
-            <h3>inputs.json</h3>
-            <span id="detail-inputs-status" class="muted-text"></span>
-          </div>
-          <pre id="detail-inputs" class="json-viewer"><code>Select a test to view its inputs.</code></pre>
-        </div>
-      </section>
-
-    </main>
-
-    <footer class="footer" role="contentinfo">
-      <small id="footer-generated">Data from ./output/</small>
-      <small>Workflow Test Dashboard</small>
-    </footer>
-  </div>
-
-  <script src="assets/js/page-utils.js?v=3" type="module"></script>
-  <script src="assets/js/app.js?v=3" type="module"></script>
+  <script type="module" src="app.js"></script>
 </body>
-
 </html>

@@ -1,34 +1,24 @@
-name: Run PW Workflow
+name: Run PROBE
 
 on:
   workflow_dispatch:
     inputs:
       platform:
-        description: 'PW platform host'
+        description: 'Platform host'
         required: true
         type: choice
         options:
           - activate.parallel.works
           - activate.hpc.mil
       workflow_name:
-        description: 'Workflow name (slug) or path to a local YAML file'
+        description: 'Registered PROBE workflow name on the platform'
         required: true
-        default: 'workflowstatusmonitor'
+        default: 'probe'
         type: string
       resource:
-        description: 'Resource URI (e.g. pw://alvaro/user-workspace)'
+        description: 'Resource PROBE runs on (e.g. pw://alvaro/user-workspace)'
         required: true
         default: 'pw://alvaro/user-workspace'
-        type: string
-      bucket:
-        description: 'Bucket URI (e.g. pw://alvaro/gcpbucket)'
-        required: true
-        default: 'pw://alvaro/gcpbucket'
-        type: string
-      bucket_path:
-        description: 'Output path inside the bucket (leave empty for default)'
-        required: false
-        default: ''
         type: string
       tests_repo:
         description: 'Repository holding the test definitions'
@@ -41,17 +31,37 @@ on:
         default: 'main'
         type: string
       tests_directory:
-        description: 'Directory within the tests repo (default: the platform host)'
+        description: 'Directory of test definitions inside the repository'
         required: false
-        default: '${PW_PLATFORM_HOST}'
+        default: 'tests'
+        type: string
+      filter:
+        description: 'Optional test id filter (substring or glob)'
+        required: false
+        default: ''
+        type: string
+      bucket:
+        description: 'Results bucket URI (empty keeps results only for the life of the run)'
+        required: false
+        default: 'pw://alvaro/gcpbucket'
+        type: string
+      bucket_path:
+        description: 'Path inside the bucket'
+        required: false
+        default: 'probe/results'
+        type: string
+      interval_hours:
+        description: 'Repeat the suite every N hours (0 = once)'
+        required: false
+        default: '0'
         type: string
       run_tests:
-        description: 'Run workflow tests'
+        description: 'Run the tests'
         required: false
         default: true
         type: boolean
       serve_dashboard:
-        description: 'Start the results dashboard session'
+        description: 'Serve the dashboard'
         required: false
         default: true
         type: boolean
@@ -70,7 +80,7 @@ jobs:
             *) echo "::error::Unsupported architecture: $(uname -m)"; exit 1 ;;
           esac
           mkdir -p ~/bin
-          wget -q "https://activate.parallel.works/cli/pw-linux-${arch}" -O ~/bin/pw
+          wget -q "https://${PW_PLATFORM_HOST}/cli/pw-linux-${arch}" -O ~/bin/pw
           chmod +x ~/bin/pw
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
@@ -81,26 +91,29 @@ jobs:
 
       - name: Create inputs.json
         run: |
-          cat > inputs.json << 'EOF'
-          {
-            "resource": "${{ inputs.resource }}",
-            "bucket": "${{ inputs.bucket }}",
-            "bucket_path": "${{ inputs.bucket_path }}",
-            "tests": {
-              "repo": "${{ inputs.tests_repo }}",
-              "branch": "${{ inputs.tests_branch }}",
-              "directory": "${{ inputs.tests_directory }}"
-            },
-            "run_tests": ${{ inputs.run_tests }},
-            "serve_dashboard": ${{ inputs.serve_dashboard }}
+          python3 - <<'EOF'
+          import json, os
+          bucket = "${{ inputs.bucket }}".strip()
+          inputs = {
+              "resource": "${{ inputs.resource }}",
+              "tests": {"repo": "${{ inputs.tests_repo }}", "branch": "${{ inputs.tests_branch }}",
+                        "directory": "${{ inputs.tests_directory }}"},
+              "filter": "${{ inputs.filter }}",
+              "results": {"path": "${{ inputs.bucket_path }}"},
+              "schedule": {"interval_hours": int("${{ inputs.interval_hours }}" or 0)},
+              "run_tests": ${{ inputs.run_tests }},
+              "serve_dashboard": ${{ inputs.serve_dashboard }},
+              "admin_dashboard": ${{ inputs.serve_dashboard }},
           }
+          if bucket:
+              inputs["results"]["bucket"] = bucket
+          json.dump(inputs, open("inputs.json", "w"), indent=2)
+          print(json.dumps(inputs, indent=2))
           EOF
-          echo "Workflow inputs:"
-          cat inputs.json
 
-      - name: Run workflow
+      - name: Run PROBE
         run: |
-          pw workflows run \
+          pw workflows run --trust \
             --name "ci: ${{ github.workflow }} #${{ github.run_number }}" \
             -i inputs.json \
             "${{ inputs.workflow_name }}"

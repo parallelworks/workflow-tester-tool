@@ -1,116 +1,99 @@
 # yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
+# PROBE: runs the compatibility tests defined for this platform and user, keeps
+# their results in a bucket, and serves the compatibility dashboard through pw
+# endpoints for as long as this run lives. Cancel the run to take it down.
 permissions:
   - '*'
 env:
   PW_PLATFORM_HOST: ${{ env.PW_PLATFORM_HOST }}
   PW_USER: ${{ env.PW_USER }}
   PW_API_KEY: ${{ env.PW_API_KEY }}
-sessions:
-  dashboard:
-    redirect: true
-  admin:
-    redirect: false
 jobs:
   setup:
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
-      - name: Checkout
+      - name: Checkout PROBE
         uses: parallelworks/checkout
         with:
-          repo: https://github.com/parallelworks/workflow-tester-tool.git
-          branch: main
-      - name: Checkout tests
+          repo: ${{ inputs.code.repo }}
+          branch: ${{ inputs.code.branch }}
+      - name: Fetch test definitions
         run: |
-          set -x
+          set -eo pipefail
           cd ${PW_PARENT_JOB_DIR}
-
-          # The test definitions may live in a different repo/branch/directory
-          # than this tool (see the "Test Source" form inputs). Fetch only the
-          # configured directory (sparse checkout) and normalise it into
-          #   tests/<platform>/<user>/<kind>/<workflow>/<test>.json
-          # so run_tests.py / serve.py see the platform-keyed tree they expect.
           REPO="${{ inputs.tests.repo }}"
           BRANCH="${{ inputs.tests.branch }}"
-
-          # Directory within the repo holding the tests. Defaults to the literal
-          # ${PW_PLATFORM_HOST}, which the shell expands here to the live host.
           DIR="${{ inputs.tests.directory }}"
-          DIR="${DIR#https://}"; DIR="${DIR#http://}"; DIR="${DIR%/}"
-
-          # Platform host the dashboard groups results under (scheme-stripped).
-          PLATFORM="${PW_PLATFORM_HOST#https://}"; PLATFORM="${PLATFORM#http://}"
-          PLATFORM="${PLATFORM%%/*}"
-          DIR="${DIR:-$PLATFORM}"
-
-          echo "::notice::Fetching tests from ${REPO}@${BRANCH} (dir: ${DIR})"
-
+          DIR="${DIR#/}"; DIR="${DIR%/}"; DIR="${DIR:-tests}"
+          echo "::notice::Fetching test definitions from ${REPO}@${BRANCH} (directory ${DIR})"
           rm -rf tests-src tests
-          # Blobless, sparse clone: only the configured directory is materialised,
-          # and Git-LFS blobs (e.g. interactive_session/downloads) are never pulled.
-          export GIT_LFS_SKIP_SMUDGE=1
-          git clone -q --no-checkout --depth 1 --filter=blob:none \
-            --branch "${BRANCH}" "${REPO}" tests-src
+          export GIT_TERMINAL_PROMPT=0 GIT_LFS_SKIP_SMUDGE=1
+          git clone -q --no-checkout --depth 1 --filter=blob:none --branch "${BRANCH}" "${REPO}" tests-src
           ( cd tests-src
             git sparse-checkout init --no-cone
             git sparse-checkout set "${DIR}"
             git checkout -q )
-
-          mkdir -p "tests/${PLATFORM}"
-          if [ -d "tests-src/${DIR}" ]; then
-            cp -a "tests-src/${DIR}/." "tests/${PLATFORM}/"
-            echo "::notice::Tests staged under tests/${PLATFORM}"
-          else
-            echo "::warning::Directory '${DIR}' not found in ${REPO}@${BRANCH} — no tests to run"
+          if [ ! -d "tests-src/${DIR}" ]; then
+            echo "::error::Directory '${DIR}' not found in ${REPO}@${BRANCH}"
+            exit 1
           fi
-      - name: Get Session Ports
-        if: ${{ inputs.serve_dashboard }}
+          mkdir -p tests
+          cp -a "tests-src/${DIR}/." tests/
+          rm -rf tests-src
+          echo "::notice::$(find tests -name '*.json' | wc -l) test definition file(s) staged"
+          python3 -m probe list --tests tests --platform "${PW_PLATFORM_HOST}" --user "${PW_USER}" || echo "::warning::Some test definitions are invalid; see above"
+      - name: Restore results
         run: |
-          SESSION_PORT=$(pw agent open-port)
-          echo "SESSION_PORT=${SESSION_PORT}" | tee -a $OUTPUTS
-          ADMIN_PORT=$(pw agent open-port)
-          echo "ADMIN_PORT=${ADMIN_PORT}" | tee -a $OUTPUTS
-      - name: Restore outputs from bucket
-        run: |
-          BUCKET_PATH="${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}"
-          rm -rf output
-          pw buckets cp -r "${BUCKET_PATH}/" output/ \
-            && echo "::notice::Outputs restored from ${BUCKET_PATH}" \
-            || echo "::warning::No outputs found at ${BUCKET_PATH} — starting fresh"
-  run_tests:
+          cd ${PW_PARENT_JOB_DIR}
+          export PATH=$HOME/pw:$PATH
+          BUCKET="${{ inputs.results.bucket.uri }}"
+          BUCKET_PATH="${{ inputs.results.path }}"
+          mkdir -p results
+          case "${BUCKET}" in
+            ''|undefined|pw://) echo "::notice::No results bucket configured; results stay in ${PW_PARENT_JOB_DIR}/results for the life of this run" ;;
+            *)
+              pw buckets cp -r "${BUCKET}/${BUCKET_PATH#/}/" results/ \
+                && echo "::notice::Results restored from ${BUCKET}/${BUCKET_PATH#/}" \
+                || echo "::warning::Nothing restored from ${BUCKET}/${BUCKET_PATH#/}; starting with an empty results tree" ;;
+          esac
+  run:
     if: ${{ inputs.run_tests }}
     needs:
       - setup
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
-      - name: Run Tests
+      - name: Run the suite
         run: |
-          set -x
-          echo "PW_PLATFORM_HOST=${PW_PLATFORM_HOST:-NOT_SET}"
-          echo "PW_USER=${PW_USER:-NOT_SET}"
-          export PATH=$HOME/pw:$PATH
           cd ${PW_PARENT_JOB_DIR}
-
-          # Log current cluster states up front — makes "why was this skipped?"
-          # answerable straight from the job log.
-          echo "::group::Cluster states"
-          pw --platform-host "${PW_PLATFORM_HOST}" cluster ls -o table || true
-          echo "::endgroup::"
-
-          # Test failures are data, not workflow failures: never let a non-zero
-          # exit fail this job, or the serve_* jobs would be early-cancelled and
-          # the dashboards would never come up.
-          python3 -u run_tests.py \
-            --platform "${PW_PLATFORM_HOST}" \
-            --user "${PW_USER}" \
-            --tests-dir "${PW_PARENT_JOB_DIR}/tests" \
-            --output-dir "${PW_PARENT_JOB_DIR}/output" \
-            || echo "::warning::run_tests.py exited non-zero — see the dashboard for failing tests"
-      - name: Transfer outputs to bucket
-        if: ${{ always }}
-        run: |
-          pw buckets cp -r "${PW_PARENT_JOB_DIR}/output" ${{ inputs.bucket.uri }}/${{ inputs.bucket_path }}
+          export PATH=$HOME/pw:$PATH
+          BUCKET="${{ inputs.results.bucket.uri }}"
+          BUCKET_PATH="${{ inputs.results.path }}"
+          INTERVAL="${{ inputs.schedule.interval_hours }}"
+          FILTER="${{ inputs.filter }}"
+          case "${FILTER}" in ''|undefined) FILTER_ARGS="" ;; *) FILTER_ARGS="--filter ${FILTER}" ;; esac
+          case "${INTERVAL}" in ''|undefined) INTERVAL=0 ;; esac
+          sync_results() {
+            case "${BUCKET}" in
+              ''|undefined|pw://) ;;
+              *) pw buckets cp -r results/ "${BUCKET}/${BUCKET_PATH#/}/" \
+                   && echo "::notice::Results synced to ${BUCKET}/${BUCKET_PATH#/}" \
+                   || echo "::warning::Results sync to ${BUCKET}/${BUCKET_PATH#/} failed" ;;
+            esac
+          }
+          while :; do
+            echo "::group::PROBE suite $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            # Test failures are data, not workflow failures: the job stays green so
+            # the dashboard keeps serving them.
+            python3 -u -m probe run --tests tests --results results ${FILTER_ARGS} \
+              || echo "::warning::probe run exited $? (failing tests or invalid definitions); see the dashboard"
+            echo "::endgroup::"
+            sync_results
+            [ "${INTERVAL}" -gt 0 ] 2>/dev/null || break
+            echo "::notice::Next suite run in ${INTERVAL} hour(s)"
+            sleep $(( INTERVAL * 3600 ))
+          done
   serve:
     if: ${{ inputs.serve_dashboard }}
     needs:
@@ -118,70 +101,27 @@ jobs:
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
-      - name: Start Dashboard
-        early-cancel: any-job-failed
+      - name: Serve the dashboard
         run: |
-          export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.dashboard }}
-          python3 serve.py \
-            --port ${{ needs.setup.outputs.SESSION_PORT }} \
-            --tests-dir ${PW_PARENT_JOB_DIR}/tests \
-            --output-dir ${PW_PARENT_JOB_DIR}/output &
-          echo $! > ${PW_PARENT_JOB_DIR}/service.pid
-          sleep inf
-        cleanup: |
-          pid=$(cat ${PW_PARENT_JOB_DIR}/service.pid 2>/dev/null)
-          [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
+          cd ${PW_PARENT_JOB_DIR}
+          export PATH=$HOME/pw:$PATH
+          echo "::notice::Dashboard endpoint probe-${PW_RUN_SLUG}"
+          pw endpoints run --name probe-${PW_RUN_SLUG} -o text -- \
+            python3 -u -m probe serve --port {port} --prefix {path} --results results --tests tests
   serve_admin:
-    if: ${{ inputs.serve_dashboard }}
+    if: ${{ inputs.serve_dashboard && inputs.admin_dashboard }}
     needs:
       - setup
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
-      - name: Start Admin Dashboard
-        early-cancel: any-job-failed
+      - name: Serve the admin dashboard
         run: |
-          export PW_BASE_PATH=/me/session/${PW_USER}/${{ sessions.admin }}
-          python3 serve.py \
-            --port ${{ needs.setup.outputs.ADMIN_PORT }} \
-            --tests-dir ${PW_PARENT_JOB_DIR}/tests \
-            --output-dir ${PW_PARENT_JOB_DIR}/output \
-            --admin &
-          echo $! > ${PW_PARENT_JOB_DIR}/admin.pid
-          sleep inf
-        cleanup: |
-          pid=$(cat ${PW_PARENT_JOB_DIR}/admin.pid 2>/dev/null)
-          [ -n "${pid}" ] && kill "${pid}" 2>/dev/null || true
-  create_session:
-    if: ${{ inputs.serve_dashboard }}
-    needs:
-      - setup
-    ssh:
-      remoteHost: ${{ inputs.resource.ip }}
-    steps:
-      - name: Create DashboardSession
-        early-cancel: any-job-failed
-        uses: parallelworks/update-session
-        with:
-          target: ${{ inputs.resource.id }}
-          name: ${{ sessions.dashboard }}
-          remoteHost: 0.0.0.0
-          remotePort: ${{ needs.setup.outputs.SESSION_PORT }}
-  create_session_admin:
-    if: ${{ inputs.serve_dashboard }}
-    needs:
-      - setup
-    ssh:
-      remoteHost: ${{ inputs.resource.ip }}
-    steps:
-      - name: Create AdminSession
-        early-cancel: any-job-failed
-        uses: parallelworks/update-session
-        with:
-          target: ${{ inputs.resource.id }}
-          name: ${{ sessions.admin }}
-          remoteHost: 0.0.0.0
-          remotePort: ${{ needs.setup.outputs.ADMIN_PORT }}
+          cd ${PW_PARENT_JOB_DIR}
+          export PATH=$HOME/pw:$PATH
+          echo "::notice::Admin dashboard endpoint probe-admin-${PW_RUN_SLUG}"
+          pw endpoints run --name probe-admin-${PW_RUN_SLUG} -o text -- \
+            python3 -u -m probe serve --admin --port {port} --prefix {path} --results results --tests tests
 'on':
   execute:
     inputs:
@@ -190,63 +130,91 @@ jobs:
         label: Resource
         include-workspace: true
         tooltip: |
-          Resource to run tests on and host the dashboard.
-          Use the user workspace or the login node of any connected cluster.
-      bucket:
-        type: bucket
-        label: Output Storage Bucket
-        tooltip: |
-          Bucket where test results are stored between runs.
-          Existing results are restored from the bucket at startup;
-          new results are uploaded after the test run completes.
-      bucket_path:
-        type: string
-        label: Output Path in Bucket
-        default: workflow-tester-tool/output
-        tooltip: |
-          Full path to the output directory inside the bucket.
-          Results are saved as path/platform/user/...
+          Where PROBE itself runs: the user workspace or the login node of a
+          connected cluster. It launches the tests from here with the pw CLI and
+          hosts the dashboard.
       tests:
         type: group
-        label: Test Source
-        tooltip: |
-          Where the test definitions live. Tests can be stored in a repository
-          separate from this tool.
+        label: Test definitions
+        tooltip: Git repository, branch and directory holding the test definition files.
         items:
           repo:
             type: string
-            label: Tests Repository
+            label: Repository
             default: https://github.com/parallelworks/workflow-tester-tool.git
-            tooltip: |
-              Git repository holding the test definitions.
+            tooltip: Git URL of the repository that holds the test definitions.
           branch:
             type: string
-            label: Tests Branch
+            label: Branch
             default: main
-            tooltip: |
-              Branch to check out from the tests repository.
           directory:
             type: string
-            label: Tests Directory
-            default: ${PW_PLATFORM_HOST}
+            label: Directory
+            default: tests
             tooltip: |
-              Directory within the repository that holds the test tree
-              (<user>/<kind>/<workflow>/<test>.json). Defaults to the current
-              platform host (e.g. activate.parallel.works), which is how this
-              tool's own tests are organised.
+              Directory inside the repository. Every *.json file below it is a
+              test definition; only the ones whose platform and user match this
+              run are executed.
+      filter:
+        type: string
+        label: Test filter
+        optional: true
+        default: ''
+        tooltip: |
+          Optional. Only run tests whose id (<platform>/<user>/<workflow_name>/<test>)
+          contains this text or matches this glob, e.g. jupyterlab or */jean-*.
+      results:
+        type: group
+        label: Results
+        tooltip: Results are restored from this bucket before the suite and synced back after it.
+        items:
+          bucket:
+            type: bucket
+            label: Bucket
+            optional: true
+            tooltip: Leave empty to keep results only for the life of this run.
+          path:
+            type: string
+            label: Path in bucket
+            default: probe/results
+      schedule:
+        type: group
+        label: Schedule
+        items:
+          interval_hours:
+            type: number
+            label: Repeat every (hours)
+            default: 0
+            min: 0
+            tooltip: |
+              0 runs the suite once. A positive number repeats it every that many
+              hours for as long as this run lives; the dashboard stays up in between.
       run_tests:
         type: boolean
-        label: Run Tests
+        label: Run tests
         default: true
-        tooltip: |
-          Yes → Run all workflow and session tests matching the current user
-                and platform, then upload results to the bucket.
-          No  → Skip test execution; useful when serving a dashboard of
-                previously stored results.
+        tooltip: No serves the dashboard of previously stored results without running anything.
       serve_dashboard:
         type: boolean
-        label: Serve Dashboard
+        label: Serve dashboard
         default: true
-        tooltip: |
-          Yes → Start the public and admin test-results dashboards as interactive sessions.
-          No  → Run tests in batch mode only, with no web interface.
+        tooltip: Yes registers the dashboard as endpoint probe-<run slug>. It lives until this run is canceled.
+      admin_dashboard:
+        type: boolean
+        label: Serve admin dashboard
+        default: true
+        hidden: ${{ inputs.serve_dashboard == false }}
+        tooltip: Yes also registers probe-admin-<run slug>, where tests can be rerun or their runs canceled.
+      code:
+        type: group
+        label: PROBE code
+        tooltip: Where the PROBE runner and dashboard code is fetched from.
+        items:
+          repo:
+            type: string
+            label: Repository
+            default: https://github.com/parallelworks/workflow-tester-tool.git
+          branch:
+            type: string
+            label: Branch
+            default: main
