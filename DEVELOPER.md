@@ -145,9 +145,13 @@ variables are not readable from a run. The dashboards outlive their run, so
 script reads it into `PW_API_KEY` and deletes the file before anything else, and the
 setup step's cleanup removes any file a start script never consumed. The key then lives
 only in the environment of `pw endpoints run`, `probe serve` and the runners it spawns.
-Like every other input, the platform renders it into the step's script under the
-job's `logs/` directory on the resource; deleting the job directory removes that copy.
-`run-tests.yaml` needs no key: its runner works while its run is alive.
+Like every other input, the platform keeps it in the run's record (`pw workflows runs
+view -o json` shows it in `inputs`, in plain text as of September 2026) and renders it
+into the step's script under the job's `logs/` directory on the resource; deleting the
+job directory removes that copy. The equivalent without an input is a credentials
+directory on the resource authenticated once with `pw auth apikey` and selected with
+`PW_CREDENTIALS_DIR`, which the CLI honours the same way. `run-tests.yaml` needs no key:
+its runner works while its run is alive.
 
 `workflow/run-tests.yaml` has one job: checkout, fetch the test definitions, then
 `python3 -m probe run --bucket <bucket>/<path> --all` or `--test <file>` per line of the
