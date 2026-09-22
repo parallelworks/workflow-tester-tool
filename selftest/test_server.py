@@ -213,11 +213,32 @@ class ServerTests(ProbeCase):
         self.assertIn("no results bucket", data["message"])
         self.cfg.bucket = "pw://alvaro/gcpbucket/probe/results"
         try:
+            # nothing in the bucket yet: the local copy is kept
             status, data = self.post("/api/refresh", {})
             self.assertEqual(status, 200)
-            self.assertTrue(data["refreshed"])
-            calls = (self.state_dir / "calls.log").read_text()
-            self.assertIn("buckets cp -r pw://alvaro/gcpbucket/probe/results/ %s/" % self.cfg.results_dir, calls)
+            self.assertIn("no results yet", data["message"])
+            self.assertTrue((self.results_dir / TEST_ID).exists())
+            # the bucket holds one other test: after a refresh the local copy is exactly the bucket
+            other = "activate.parallel.works/alvaro/webshell/gcpsmall-compute"
+            bucket_dir = self.state_dir / "bucket" / "alvaro/gcpbucket/probe/results" / other / "2026-09-20T060000Z_z"
+            results.write_record(bucket_dir, dict(record("pass", "2026-09-20T06:00:00Z", "z"), test={"id": other, "workflow_name": "webshell"}))
+            status, data = self.post("/api/refresh", {})
+            self.assertEqual(status, 200)
+            self.assertIn("replaced", data["message"])
+            self.assertTrue((self.results_dir / other / "2026-09-20T060000Z_z" / "record.json").exists())
+            self.assertFalse((self.results_dir / TEST_ID).exists(), "results deleted from the bucket disappear")
+            # while a run started here is in progress, the download is merged instead
+            class Alive:
+                def poll(self):
+                    return None
+            (self.results_dir / TEST_ID / "2026-09-21T060000Z_pending").mkdir(parents=True)
+            self.cfg.active_runs.append((Alive(), {TEST_ID}))
+            status, data = self.post("/api/refresh", {})
+            self.assertEqual(status, 200)
+            self.assertIn("merged", data["message"])
+            self.assertTrue((self.results_dir / TEST_ID / "2026-09-21T060000Z_pending").exists())
+            self.assertTrue((self.results_dir / other).exists())
+            self.cfg.active_runs = []
         finally:
             self.cfg.bucket = None
 

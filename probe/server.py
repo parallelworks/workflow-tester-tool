@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -47,16 +48,37 @@ class Config:
 
 
 def pull_from_bucket(cfg: Config):
-    """Replace the local results copy with the bucket's. (ok, message)."""
+    """Make the local results copy match the bucket. (ok, message).
+
+    The bucket is downloaded into a sibling directory and swapped in, so results
+    deleted from the bucket disappear here too. While a run started from this
+    dashboard is writing into the local copy, the download is merged instead."""
     if not cfg.bucket:
         return False, "no results bucket configured"
     with cfg.refresh_lock:
-        result = Pw().bucket_cp(cfg.bucket + "/", str(cfg.results_dir) + "/", recursive=True)
-    if result.rc == 0:
-        return True, "results refreshed from %s" % cfg.bucket
-    if "no objects found" in result.text.lower():
-        return True, "the bucket has no results yet"
-    return False, result.one_line()
+        staging = cfg.results_dir.parent / (cfg.results_dir.name + ".refresh")
+        shutil.rmtree(str(staging), ignore_errors=True)
+        staging.mkdir(parents=True)
+        result = Pw().bucket_cp(cfg.bucket + "/", str(staging) + "/", recursive=True)
+        if result.rc != 0:
+            shutil.rmtree(str(staging), ignore_errors=True)
+            if "no objects found" in result.text.lower():
+                return True, "the bucket has no results yet; local copy kept"
+            return False, result.one_line()
+        with cfg.lock:
+            cfg.active_runs = [(p, ids) for p, ids in cfg.active_runs if p.poll() is None]
+            busy = bool(cfg.active_runs)
+        if busy:
+            shutil.copytree(str(staging), str(cfg.results_dir), dirs_exist_ok=True)
+            shutil.rmtree(str(staging), ignore_errors=True)
+            return True, "results merged from %s (a run started here is in progress)" % cfg.bucket
+        previous = cfg.results_dir.parent / (cfg.results_dir.name + ".previous")
+        shutil.rmtree(str(previous), ignore_errors=True)
+        if cfg.results_dir.exists():
+            os.rename(str(cfg.results_dir), str(previous))
+        os.rename(str(staging), str(cfg.results_dir))
+        shutil.rmtree(str(previous), ignore_errors=True)
+        return True, "results replaced with the bucket's content from %s" % cfg.bucket
 
 
 def runner_command(cfg: Config, ids: List[str]) -> List[str]:

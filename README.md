@@ -19,7 +19,7 @@ workflow stops working on a system.
           |                                <start>_<run slug>/record.json + logs, one dir per execution
           v
   dashboards   python3 -m probe serve         matrix of workflows by system, history, logs
-                                              Refresh pulls the bucket
+                                              Refresh makes the local copy match the bucket
 ```
 
 | Who runs the tests | How |
@@ -42,7 +42,7 @@ Run `workflow/workflow.yaml` on the platform, from the GitHub action or by hand.
 | Resource | Where the dashboards run and where tests started from the admin dashboard are launched: the user workspace or a cluster login node with the `pw` CLI, `python3` and `git`. |
 | API key | A platform API key of yours (account settings, API keys). The run's own credential stops working when the run completes, so the dashboards use this key afterwards. In the GitHub action it is the platform's repository secret. |
 | Test definitions | Repository, branch and directory of the test files. |
-| Results | Bucket and path of the results. Required. |
+| Results | Bucket and path of the results. Required. Restored when the run starts; `Refresh` replaces the dashboard's copy with the bucket's content, so results deleted from the bucket disappear too. |
 | PROBE code | Repository and branch of this code. |
 
 The run completes once both endpoints answer; the dashboards keep running:

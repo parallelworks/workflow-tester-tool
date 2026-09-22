@@ -19,6 +19,8 @@ launched YAML path or of the run's --name:
   ssh_fail      true makes every pw ssh call fail
   bucket_fail      true makes every pw buckets cp upload fail
   bucket_pull_fail true makes every pw buckets cp download fail with a network error
+Uploads and downloads with pw buckets cp go through a fake bucket store under
+MOCK_PW_STATE/bucket/<uri path>, so a suite run with --bucket can be pulled back.
   errors        {"<key>": "<error annotation message>"}
 """
 import json
@@ -233,6 +235,45 @@ def cmd_endpoints(argv):
     return 2
 
 
+def bucket_path(uri):
+    return STATE / "bucket" / uri[len("pw://"):].strip("/")
+
+
+def cmd_buckets_cp(argv):
+    import shutil
+    source, destination = argv[-2], argv[-1]
+    recursive = "-r" in argv
+    if source.startswith("pw://"):
+        if CONFIG.get("bucket_pull_fail"):
+            sys.stderr.write("2026-09-21T10:00:00Z [ERROR] connection reset by peer\n")
+            return 1
+        src = bucket_path(source)
+        if recursive:
+            if not src.is_dir() or not any(src.rglob("*")):
+                sys.stderr.write("2026-09-21T10:00:00Z [ERROR] no objects found with prefix \"%s\"\n" % source)
+                return 1
+            shutil.copytree(str(src), destination, dirs_exist_ok=True)
+        else:
+            if not src.is_file():
+                sys.stderr.write("2026-09-21T10:00:00Z [ERROR] %s is a directory, use -r/--recursive\n" % source[5:])
+                return 1
+            Path(destination).mkdir(parents=True, exist_ok=True)
+            shutil.copy(str(src), str(Path(destination) / src.name))
+        print("%s -> %s completed" % (source, destination))
+        return 0
+    if CONFIG.get("bucket_fail"):
+        sys.stderr.write("2026-09-21T10:00:00Z [ERROR] bucket unavailable\n")
+        return 1
+    dst = bucket_path(destination)
+    if recursive:
+        shutil.copytree(source, str(dst), dirs_exist_ok=True)
+    else:
+        dst.mkdir(parents=True, exist_ok=True)
+        shutil.copy(source, str(dst / Path(source).name))
+    print("%s -> %s completed" % (source, destination))
+    return 0
+
+
 def cmd_ssh(argv):
     if CONFIG.get("ssh_fail"):
         sys.stderr.write("ssh: connection refused\n")
@@ -285,18 +326,7 @@ def main():
     if argv[0] == "ssh":
         return cmd_ssh(argv)
     if argv[0] in ("buckets", "bucket") and len(argv) > 1 and argv[1] == "cp":
-        source, destination = argv[-2], argv[-1]
-        if source.startswith("pw://"):
-            if CONFIG.get("bucket_pull_fail"):
-                sys.stderr.write("2026-09-21T10:00:00Z [ERROR] connection reset by peer\n")
-                return 1
-            print("%s -> %s completed" % (source, destination))
-            return 0
-        if CONFIG.get("bucket_fail"):
-            sys.stderr.write("2026-09-21T10:00:00Z [ERROR] bucket unavailable\n")
-            return 1
-        print("%s -> %s completed" % (source, destination))
-        return 0
+        return cmd_buckets_cp(argv)
     sys.stderr.write("mock pw: unhandled command: %s\n" % " ".join(argv))
     return 2
 

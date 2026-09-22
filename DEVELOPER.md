@@ -110,7 +110,7 @@ endpoint prefix puts it:
 | `GET api/tests/<id>/definition` | the definition file |
 | `GET api/tests/<id>/artifacts` | execution directories and their files |
 | `GET api/tests/<id>/artifacts/<dir>/<file>` | a file (last 4 MB) |
-| `POST api/refresh` | pulls the bucket into the local results copy (both dashboards) |
+| `POST api/refresh` | downloads the bucket into a staging directory and swaps it in as the local results copy, or merges it while a run started from this dashboard is in progress (both dashboards) |
 | `POST api/run` `{"ids": [...]}` or `{"all": true}` | admin: starts `python3 -m probe run --bucket ...` in the background; 409 while an overlapping run is in progress |
 | `POST api/cancel` `{"slug", "platform"}` | admin: `pw workflows runs cancel` |
 

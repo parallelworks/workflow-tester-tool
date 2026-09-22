@@ -41,7 +41,7 @@ for name, kw in [("webshell/gcpsmall-controller", {}), ("webshell/gcpsmall-compu
     path.write_text(json.dumps(data, indent=2))
 EOF
 echo "seeding results with one suite run (mock pw)"
-python3 -m probe run --tests "${WORK}/tests" --results "${WORK}/results" --poll-interval 1 --suite-run seed >/dev/null
+python3 -m probe run --tests "${WORK}/tests" --results "${WORK}/results" --poll-interval 1 --suite-run seed --bucket pw://alvaro/gcpbucket/probe/results >/dev/null
 python3 -m probe serve --admin --results "${WORK}/results" --tests "${WORK}/tests" --port 8766 --host 127.0.0.1 --bucket pw://alvaro/gcpbucket/probe/results >"${WORK}/serve.log" 2>&1 &
 SERVER=$!
 sleep 1
