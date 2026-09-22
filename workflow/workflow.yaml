@@ -29,26 +29,10 @@ jobs:
         run: |
           set -eo pipefail
           cd ${PW_PARENT_JOB_DIR}
-          REPO="${{ inputs.tests.repo }}"
-          BRANCH="${{ inputs.tests.branch }}"
           DIR="${{ inputs.tests.directory }}"
-          DIR="${DIR#/}"; DIR="${DIR%/}"; DIR="${DIR:-tests}"
-          echo "::notice::Fetching test definitions from ${REPO}@${BRANCH} (directory ${DIR})"
-          rm -rf tests-src tests
-          export GIT_TERMINAL_PROMPT=0 GIT_LFS_SKIP_SMUDGE=1
-          git clone -q --no-checkout --depth 1 --filter=blob:none --branch "${BRANCH}" "${REPO}" tests-src
-          ( cd tests-src
-            git sparse-checkout init --no-cone
-            git sparse-checkout set "${DIR}"
-            git checkout -q )
-          if [ ! -d "tests-src/${DIR}" ]; then
-            echo "::error::Directory '${DIR}' not found in ${REPO}@${BRANCH}"
-            exit 1
-          fi
-          mkdir -p tests
-          cp -a "tests-src/${DIR}/." tests/
-          rm -rf tests-src
-          echo "::notice::$(find tests -name '*.json' | wc -l) test definition file(s) staged"
+          case "${DIR}" in ''|undefined) DIR=tests ;; esac
+          python3 -m probe fetch-tests --repo "${{ inputs.tests.repo }}" --branch "${{ inputs.tests.branch }}" \
+            --directory "${DIR}" --out tests
           python3 -m probe list --tests tests --platform "${PW_PLATFORM_HOST}" --user "${PW_USER}" \
             || echo "::warning::Some test definitions are invalid; see above"
       - name: Restore results from the bucket
@@ -78,6 +62,10 @@ jobs:
           BUCKET="${{ inputs.results.bucket.uri }}"
           RESULTS="${BUCKET%/}/${{ inputs.results.path }}"
           RESULTS="${RESULTS%/}"
+          TESTS_REPO="${{ inputs.tests.repo }}"
+          TESTS_BRANCH="${{ inputs.tests.branch }}"
+          TESTS_DIR="${{ inputs.tests.directory }}"
+          case "${TESTS_DIR}" in ''|undefined) TESTS_DIR=tests ;; esac
           case "${PROBE_API_KEY}" in
             ''|undefined) echo "::error::An API key is required: the dashboards use it after this run completes"; exit 1 ;;
           esac
@@ -107,7 +95,8 @@ jobs:
           cd ${PW_PARENT_JOB_DIR}
           echo "::notice::Starting endpoint ${name}"
           pw endpoints run --name ${name} -o text -- \\
-            python3 -u -m probe serve ${flag} --port {port} --prefix {path} --results results --tests tests --bucket "${RESULTS}"
+            python3 -u -m probe serve ${flag} --port {port} --prefix {path} --results results --tests tests --bucket "${RESULTS}" \\
+              --tests-repo "${TESTS_REPO}" --tests-branch "${TESTS_BRANCH}" --tests-directory "${TESTS_DIR}"
           if [ \$? -ne 0 ]; then
             # pw endpoints run blocks for the life of the endpoint, so it also exits
             # non-zero when this job is cancelled after a successful start. Only a

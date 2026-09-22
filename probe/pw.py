@@ -197,6 +197,9 @@ class Pw:
         args = ["buckets", "cp"] + (["-r"] if recursive else []) + [source, destination]
         return self._run(*args, timeout=600)
 
+    def bucket_rm(self, prefix: str) -> Completed:
+        return self._run("buckets", "rm", "-r", "-f", prefix, timeout=600)
+
 
 def repo_url(repo: str) -> str:
     if re.match(r"^[a-z][a-z0-9+.-]*://", repo) or repo.startswith("git@"):
@@ -246,6 +249,16 @@ class Checkout:
             raise FetchError("cannot check out %s@%s: %s" % (self.repo, self.ref, clean_error(r.text)))
         self.commit = self._git("rev-parse", "HEAD").out.strip() or None
         return self.commit
+
+    def directory(self, path: str) -> Path:
+        """Absolute path of directory `path` in the checkout, materialising it."""
+        target = self.dest / path.strip("/")
+        self._git("sparse-checkout", "add", path.strip("/"))
+        if not target.is_dir():
+            self._git("checkout", "-q", "FETCH_HEAD", "--", path.strip("/"))
+        if not target.is_dir():
+            raise FetchError("no directory %s in %s@%s" % (path, self.repo, self.ref))
+        return target.resolve()
 
     def file(self, path: str) -> Path:
         """Absolute path of `path` in the checkout, materialising it if needed."""

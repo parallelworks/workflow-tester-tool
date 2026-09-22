@@ -63,6 +63,35 @@ def definition(workflow_name="webshell", path="workflows/webshell/yamls/general.
     return data
 
 
+def make_tests_repo(root, files):
+    """A git repository holding test definition files under tests/. `files` maps
+    tests/-relative paths to JSON-serialisable definitions. Returns (URL, path)."""
+    src = root / "tests-src"
+    src.mkdir()
+    for rel, data in files.items():
+        path = src / "tests" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+    git("init", "-q", str(src))
+    git("symbolic-ref", "HEAD", "refs/heads/main", cwd=str(src))
+    git("add", ".", cwd=str(src))
+    git("commit", "-q", "-m", "tests", cwd=str(src))
+    git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=str(src))
+    return "file://" + str(src), src
+
+
+def commit_tests_repo(src, files, remove=()):
+    """Add or replace files under tests/ (and remove others), then commit."""
+    for rel, data in files.items():
+        path = src / "tests" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+    for rel in remove:
+        (src / "tests" / rel).unlink()
+    git("add", "-A", ".", cwd=str(src))
+    git("commit", "-q", "-m", "update", cwd=str(src))
+
+
 class ProbeCase(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="probe-selftest-"))

@@ -40,6 +40,21 @@ for name, kw in [("webshell/gcpsmall-controller", {}), ("webshell/gcpsmall-compu
     data["workflow"]["repo"] = url
     path.write_text(json.dumps(data, indent=2))
 EOF
+python3 - "${WORK}" <<'EOF'
+# results of a test that has no definition: the admin dashboard can delete them
+import sys
+from pathlib import Path
+from probe.results import write_record
+work = Path(sys.argv[1])
+old = "activate.parallel.works/alvaro/oldwf/oldtest"
+for where in (work / "results", work / "state" / "bucket" / "alvaro/gcpbucket/probe/results"):
+    write_record(where / old / "2026-09-20T060000Z_z", {
+        "schema": 1, "suite_run": "old", "pw_cli": "v7", "test": {"id": old, "workflow_name": "oldwf"},
+        "workflow": {"repo": "r", "path": "p", "ref": "canary", "commit": None},
+        "target": {"platform": "activate.parallel.works", "user": "alvaro", "system": "gcpsmall", "resource": "pw://alvaro/gcpsmall", "type": "cluster", "node": "controller"},
+        "outcome": {"status": "pass", "failed_at": None, "error": None, "phase": None, "cleanup": "ok", "run_slug": "z",
+                    "endpoint": None, "started_at": "2026-09-20T06:00:00Z", "ended_at": "2026-09-20T06:01:00Z", "duration_s": 60}})
+EOF
 echo "seeding results with one suite run (mock pw)"
 python3 -m probe run --tests "${WORK}/tests" --results "${WORK}/results" --poll-interval 1 --suite-run seed --bucket pw://alvaro/gcpbucket/probe/results >/dev/null
 python3 -m probe serve --admin --results "${WORK}/results" --tests "${WORK}/tests" --port 8766 --host 127.0.0.1 --bucket pw://alvaro/gcpbucket/probe/results >"${WORK}/serve.log" 2>&1 &

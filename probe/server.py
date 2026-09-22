@@ -23,8 +23,9 @@ from urllib.parse import unquote, urlparse
 
 from . import __version__
 from .definitions import load_tests
-from .pw import Pw
-from .results import id_parts, scan, state, suite_runs, test_records, valid_id
+from .pw import FetchError, Pw
+from .results import execution_dirs, id_parts, running_executions, scan, state, suite_runs, test_records, valid_id
+from .tests_source import fetch_tests
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -34,9 +35,13 @@ TEXT_TYPES = {".log": "text/plain", ".txt": "text/plain", ".json": "application/
 
 class Config:
     def __init__(self, results_dir: Path, tests_dir: Path, web_dir: Path = WEB_DIR,
-                 prefix: str = "", admin: bool = False, bucket: Optional[str] = None):
+                 prefix: str = "", admin: bool = False, bucket: Optional[str] = None,
+                 tests_repo: Optional[str] = None, tests_branch: str = "main", tests_directory: str = "tests"):
         self.results_dir = results_dir.resolve()
         self.tests_dir = tests_dir.resolve()
+        self.tests_repo = tests_repo or None
+        self.tests_branch = tests_branch or "main"
+        self.tests_directory = tests_directory or "tests"
         self.web_dir = web_dir.resolve()
         self.prefix = ("/" + prefix.strip("/")) if prefix and prefix.strip("/") else ""
         self.admin = admin
@@ -47,6 +52,45 @@ class Config:
         self.refresh_lock = threading.Lock()
 
 
+def refresh_tests(cfg: Config):
+    """Replace the local test definitions with the tests repository's. (ok, message)."""
+    if not cfg.tests_repo:
+        return True, "test definitions from the local directory"
+    with cfg.refresh_lock:
+        try:
+            count = fetch_tests(cfg.tests_repo, cfg.tests_branch, cfg.tests_directory, cfg.tests_dir)
+        except FetchError as exc:
+            return False, "test definitions not refreshed: %s" % exc
+    return True, "%d test definition file(s) from %s@%s" % (count, cfg.tests_repo, cfg.tests_branch)
+
+
+def delete_results(cfg: Config, test_id: str):
+    """Remove every result of a test that has no definition. (status, payload)."""
+    if not valid_id(test_id):
+        return 400, {"error": "invalid test id"}
+    tests, _ = load_tests(cfg.tests_dir)
+    if any(t.id == test_id for t in tests):
+        return 400, {"error": "the test has a definition; delete its file and refresh first"}
+    test_dir = cfg.results_dir / test_id
+    if not test_dir.is_dir():
+        return 404, {"error": "no results for %s" % test_id}
+    if running_executions(test_dir):
+        return 409, {"error": "an execution of this test is in progress"}
+    executions = len(execution_dirs(test_dir))
+    if cfg.bucket:
+        result = Pw().bucket_rm("%s/%s/" % (cfg.bucket, test_id))
+        if result.rc != 0 and "no objects found" not in result.text.lower():
+            return 502, {"error": "bucket delete failed: %s" % result.one_line()}
+    shutil.rmtree(str(test_dir), ignore_errors=True)
+    parent = test_dir.parent
+    while parent != cfg.results_dir and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+    print("deleted results of %s (%d execution(s))%s" % (
+        test_id, executions, " from " + cfg.bucket if cfg.bucket else ""), flush=True)
+    return 200, {"deleted": test_id, "executions": executions}
+
+
 def pull_from_bucket(cfg: Config):
     """Make the local results copy match the bucket. (ok, message).
 
@@ -54,7 +98,7 @@ def pull_from_bucket(cfg: Config):
     deleted from the bucket disappear here too. While a run started from this
     dashboard is writing into the local copy, the download is merged instead."""
     if not cfg.bucket:
-        return False, "no results bucket configured"
+        return True, "no results bucket configured; local results kept"
     with cfg.refresh_lock:
         staging = cfg.results_dir.parent / (cfg.results_dir.name + ".refresh")
         shutil.rmtree(str(staging), ignore_errors=True)
@@ -141,6 +185,7 @@ def build_state(cfg: Config) -> dict:
         "admin": cfg.admin,
         "results_dir": str(cfg.results_dir),
         "bucket": cfg.bucket,
+        "tests_source": ("%s@%s:%s" % (cfg.tests_repo, cfg.tests_branch, cfg.tests_directory)) if cfg.tests_repo else None,
         "tests": items,
         "suite_runs": suite_runs(all_records),
         "definition_errors": errors,
@@ -201,14 +246,19 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         route = self._api_route(unquote(urlparse(self.path).path))
         if route == "/refresh":
+            tests_ok, tests_message = refresh_tests(self.cfg)
             ok, message = pull_from_bucket(self.cfg)
-            return self._json({"refreshed": ok, "message": message}, 200 if ok else 502)
+            return self._json({"refreshed": ok and tests_ok, "message": "%s; %s" % (tests_message, message)},
+                              200 if (ok and tests_ok) else 502)
         if not self.cfg.admin:
             return self._json({"error": "this dashboard is read-only"}, 403)
         if route == "/run":
             return self._post_run()
         if route == "/cancel":
             return self._post_cancel()
+        if route == "/delete":
+            status, payload = delete_results(self.cfg, str(self._body().get("id") or ""))
+            return self._json(payload, status)
         return self._json({"error": "not found"}, 404)
 
     def end_headers(self):
@@ -374,8 +424,10 @@ def serve(cfg: Config, host: Optional[str], port: int) -> None:
     print("PROBE dashboard %s on %s port %d (%s)" % (
         __version__, server.server_address[0], server.server_address[1],
         "admin" if cfg.admin else "read-only"), flush=True)
-    print("  results %s\n  bucket  %s\n  tests   %s\n  prefix  %s" % (
-        cfg.results_dir, cfg.bucket or "none", cfg.tests_dir, cfg.prefix or "/"), flush=True)
+    print("  results %s\n  bucket  %s\n  tests   %s\n  source  %s\n  prefix  %s" % (
+        cfg.results_dir, cfg.bucket or "none", cfg.tests_dir,
+        ("%s@%s:%s" % (cfg.tests_repo, cfg.tests_branch, cfg.tests_directory)) if cfg.tests_repo else "local directory",
+        cfg.prefix or "/"), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -3,12 +3,13 @@
 ## Layout
 
 ```
-probe/__main__.py       command line: run, serve, list
+probe/__main__.py       command line: run, serve, list, fetch-tests
 probe/definitions.py    test definition files: validation, ids (from the fields, not the path), target
 probe/pw.py             pw CLI wrapper, git checkout of workflow YAMLs
 probe/runner.py         one run of the suite: gate, launch, poll, verdict, cleanup, record, upload
 probe/results.py        results tree: one record.json per execution directory, state and history
 probe/server.py         dashboard server: static web/ plus the JSON API
+probe/tests_source.py   fetch the test definitions directory from its git repository (probe fetch-tests)
 web/                    index.html, app.js, styles.css (no build step, no external assets)
 tests/                  test definitions shipped with this repository
 selftest/               offline unit tests with a mock pw CLI, browser check
@@ -110,7 +111,8 @@ endpoint prefix puts it:
 | `GET api/tests/<id>/definition` | the definition file |
 | `GET api/tests/<id>/artifacts` | execution directories and their files |
 | `GET api/tests/<id>/artifacts/<dir>/<file>` | a file (last 4 MB) |
-| `POST api/refresh` | downloads the bucket into a staging directory and swaps it in as the local results copy, or merges it while a run started from this dashboard is in progress (both dashboards) |
+| `POST api/refresh` | re-fetches the test definitions from their repository (when the server was given one), then downloads the bucket into a staging directory and swaps it in as the local results copy, or merges it while a run started from this dashboard is in progress (both dashboards) |
+| `POST api/delete` `{"id"}` | admin: removes every result of a test that has no definition, from the bucket and then locally; 400 with a definition, 409 while an execution is in progress |
 | `POST api/run` `{"ids": [...]}` or `{"all": true}` | admin: starts `python3 -m probe run --bucket ...` in the background; 409 while an overlapping run is in progress |
 | `POST api/cancel` `{"slug", "platform"}` | admin: `pw workflows runs cancel` |
 
@@ -125,7 +127,8 @@ passes `{path}`), `PW_ENDPOINT_PATH` or `X-Forwarded-Prefix`.
 ## The workflows
 
 `workflow/workflow.yaml` follows the endpoint pattern of the session workflows in
-`parallelworks/workflows`. `setup` checks out this repository and the test definitions,
+`parallelworks/workflows`. `setup` checks out this repository and the test definitions
+(`python3 -m probe fetch-tests`, which both workflows and the dashboard's Refresh use),
 restores the results from the bucket (a bucket path with no objects yet is fine; any
 other failure stops the run) and writes one start script per dashboard into
 `dashboard/` and `admin/`; each script runs `pw endpoints run --name

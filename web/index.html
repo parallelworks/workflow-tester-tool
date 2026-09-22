@@ -33,7 +33,7 @@
     <div class="top-meta" id="top-meta" aria-live="polite"></div>
     <div class="top-actions">
       <button id="run-all" class="btn" type="button" hidden>Run all</button>
-      <button id="refresh" class="btn" type="button" title="Pull the latest results from the bucket">Refresh</button>
+      <button id="refresh" class="btn" type="button" title="Reload the test definitions and the results from the bucket">Refresh</button>
       <button id="theme" class="btn" type="button" aria-label="Toggle light and dark theme">Theme</button>
     </div>
   </header>
@@ -122,6 +122,7 @@
     <div id="d-admin" class="admin-actions" hidden>
       <button id="d-rerun" class="btn" type="button">Rerun test</button>
       <button id="d-cancel" class="btn btn-danger" type="button">Cancel run</button>
+      <button id="d-delete" class="btn btn-danger" type="button" hidden title="Remove every result of this test from the bucket and the dashboard">Delete results</button>
       <span id="d-admin-msg" class="hint"></span>
     </div>
     <div id="d-error" class="banner banner-error" hidden></div>

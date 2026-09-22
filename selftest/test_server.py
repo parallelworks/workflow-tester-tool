@@ -7,7 +7,8 @@ from pathlib import Path
 
 from probe import results
 from probe.server import Config, build_state, conflicts, make_server, runner_command
-from selftest.helpers import ProbeCase, definition
+from probe.tests_source import fetch_tests
+from selftest.helpers import ProbeCase, commit_tests_repo, definition, make_tests_repo
 
 TEST_ID = "activate.parallel.works/alvaro/webshell/gcpsmall-controller"
 
@@ -209,8 +210,8 @@ class ServerTests(ProbeCase):
 
     def test_refresh_pulls_from_the_bucket_even_when_read_only(self):
         status, data = self.post("/api/refresh", {})
-        self.assertEqual(status, 502)
-        self.assertIn("no results bucket", data["message"])
+        self.assertEqual(status, 200)
+        self.assertIn("no results bucket configured", data["message"])
         self.cfg.bucket = "pw://alvaro/gcpbucket/probe/results"
         try:
             # nothing in the bucket yet: the local copy is kept
@@ -240,6 +241,71 @@ class ServerTests(ProbeCase):
             self.assertTrue((self.results_dir / other).exists())
             self.cfg.active_runs = []
         finally:
+            self.cfg.bucket = None
+
+    def test_refresh_reloads_the_test_definitions(self):
+        url, src = make_tests_repo(self.root, {"a/new-test.json": definition(name="new-test")})
+        self.cfg.tests_repo, self.cfg.tests_branch, self.cfg.tests_directory = url, "main", "tests"
+        try:
+            status, data = self.post("/api/refresh", {})
+            self.assertEqual(status, 200, data)
+            self.assertIn("1 test definition file(s)", data["message"])
+            ids = [t["id"] for t in json.loads(self.get("/api/state")[1])["tests"] if t["defined"]]
+            self.assertEqual(ids, ["activate.parallel.works/alvaro/webshell/new-test"])
+            commit_tests_repo(src, {"b/other.json": definition(name="other")}, remove=["a/new-test.json"])
+            status, data = self.post("/api/refresh", {})
+            self.assertEqual(status, 200, data)
+            ids = [t["id"] for t in json.loads(self.get("/api/state")[1])["tests"] if t["defined"]]
+            self.assertEqual(ids, ["activate.parallel.works/alvaro/webshell/other"])
+            self.cfg.tests_branch = "nope"
+            status, data = self.post("/api/refresh", {})
+            self.assertEqual(status, 502)
+            self.assertIn("not refreshed", data["message"])
+            self.assertTrue((self.cfg.tests_dir / "b/other.json").exists(), "a failed fetch keeps the current definitions")
+        finally:
+            self.cfg.tests_repo = None
+
+    def test_fetch_tests_command(self):
+        url, _ = make_tests_repo(self.root, {"x/one.json": definition(name="one"), "x/two.json": definition(name="two")})
+        out = self.root / "fetched"
+        self.assertEqual(fetch_tests(url, "main", "tests", out), 2)
+        self.assertTrue((out / "x/one.json").exists())
+        with self.assertRaises(Exception):
+            fetch_tests(url, "main", "missing-dir", out)
+        self.assertTrue((out / "x/one.json").exists(), "a failed fetch leaves the previous tree")
+
+    def test_delete_results(self):
+        status, data = self.post("/api/delete", {"id": TEST_ID})
+        self.assertEqual(status, 403)
+        self.cfg.admin = True
+        self.cfg.bucket = "pw://alvaro/gcpbucket/probe/results"
+        try:
+            status, data = self.post("/api/delete", {"id": TEST_ID})
+            self.assertEqual(status, 400)
+            self.assertIn("has a definition", data["error"])
+            status, data = self.post("/api/delete", {"id": "activate.parallel.works/alvaro/gone/never"})
+            self.assertEqual(status, 404)
+            old = "activate.parallel.works/alvaro/oldwf/oldtest"
+            local = self.results_dir / old / "2026-09-20T060000Z_z"
+            results.write_record(local, dict(record("pass", "2026-09-20T06:00:00Z", "z"), test={"id": old, "workflow_name": "oldwf"}))
+            store = self.state_dir / "bucket" / "alvaro/gcpbucket/probe/results" / old / "2026-09-20T060000Z_z"
+            results.write_record(store, dict(record("pass", "2026-09-20T06:00:00Z", "z"), test={"id": old, "workflow_name": "oldwf"}))
+            pending = self.results_dir / old / "2026-09-21T060000Z_pending"
+            pending.mkdir()
+            (pending / "run.log").write_text("running")
+            status, data = self.post("/api/delete", {"id": old})
+            self.assertEqual(status, 409)
+            pending.joinpath("run.log").unlink()
+            pending.rmdir()
+            status, data = self.post("/api/delete", {"id": old})
+            self.assertEqual(status, 200, data)
+            self.assertEqual(data["executions"], 1)
+            self.assertFalse((self.results_dir / old).exists())
+            self.assertFalse((self.results_dir / "activate.parallel.works/alvaro/oldwf").exists(), "empty parents removed")
+            self.assertFalse(store.exists(), "removed from the bucket")
+            self.assertTrue((self.results_dir / TEST_ID).exists())
+        finally:
+            self.cfg.admin = False
             self.cfg.bucket = None
 
     def test_admin_actions_refused_when_read_only(self):

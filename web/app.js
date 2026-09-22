@@ -26,7 +26,7 @@ for (const id of [
   "f-status", "f-search", "f-changes", "f-clear", "t-tests", "t-pass", "t-fail", "t-skip",
   "t-regressions", "t-last", "t-last-detail", "tile-fail", "tile-regressions", "matrix", "table-count",
   "tests-body", "suites-body", "drawer", "drawer-backdrop", "d-workflow", "d-title", "d-chips", "d-close",
-  "d-admin", "d-rerun", "d-cancel", "d-admin-msg", "d-error", "d-facts", "d-history", "d-artifact", "d-file",
+  "d-admin", "d-rerun", "d-cancel", "d-delete", "d-admin-msg", "d-error", "d-facts", "d-history", "d-artifact", "d-file",
   "d-log", "d-definition-path", "d-definition", "d-record", "foot-version", "foot-results",
 ]) el[id] = document.getElementById(id);
 
@@ -103,11 +103,23 @@ function setOptions(select, values, current, labelOf = (v) => v) {
   select.value = values.includes(previous) ? previous : "";
 }
 
-function notice(message, kind = "info") {
-  if (!message) { el.notice.hidden = true; return; }
+// One notice line. Definition errors come from the data and stay while they
+// exist; action notices (runs started, deletions, failures) fade after a while
+// and survive the periodic reload.
+let noticeTimer = null;
+function notice(message, kind = "info", source = "action") {
+  clearTimeout(noticeTimer);
+  if (!message) {
+    if (source === "definitions" && el.notice.dataset.source !== "definitions") return;
+    el.notice.hidden = true;
+    el.notice.dataset.source = "";
+    return;
+  }
   el.notice.textContent = message;
   el.notice.dataset.kind = kind;
+  el.notice.dataset.source = source;
   el.notice.hidden = false;
+  if (source === "action") noticeTimer = setTimeout(() => { if (el.notice.dataset.source === "action") el.notice.hidden = true; }, 12000);
 }
 
 // ---------------------------------------------------------------- filters (kept in the URL hash)
@@ -268,9 +280,9 @@ function renderMeta(data) {
   el["foot-results"].textContent = data.bucket ? `Results bucket: ${data.bucket}` : (data.results_dir ? `Results: ${data.results_dir} (no bucket)` : "");
   el["run-all"].hidden = !data.admin;
   if (data.definition_errors && data.definition_errors.length) {
-    notice(`${data.definition_errors.length} invalid test definition(s): ${data.definition_errors.join("; ")}`, "warn");
+    notice(`${data.definition_errors.length} invalid test definition(s): ${data.definition_errors.join("; ")}`, "warn", "definitions");
   } else {
-    notice("");
+    notice("", "info", "definitions");
   }
 }
 
@@ -349,6 +361,9 @@ function fillDrawerHeader(test) {
     el["d-cancel"].dataset.slug = runningSlug || "";
     el["d-cancel"].title = runningSlug ? `Cancel run ${runningSlug}` : "No run in progress";
     el["d-rerun"].disabled = !test.defined || test.running;
+    // results of a test that no longer has a definition can be removed
+    el["d-delete"].hidden = test.defined || test.running || !test.record_count;
+    el["d-delete"].dataset.count = test.record_count || 0;
   }
   el["d-record"].textContent = test.current ? JSON.stringify(test.current, null, 2) : "No record yet.";
   renderHistory(state.records || (test.current ? null : []) || null, test);
@@ -513,6 +528,25 @@ async function cancelSelected() {
   }
 }
 
+async function deleteSelected() {
+  const test = state.data && state.data.tests.find((t) => t.id === state.selected);
+  if (!test || test.defined) return;
+  const count = el["d-delete"].dataset.count || test.record_count;
+  if (!armed(el["d-delete"], `Click again to delete ${count} execution(s)`)) return;
+  el["d-delete"].disabled = true;
+  adminMessage("Deleting");
+  try {
+    const data = await post("api/delete", { id: test.id });
+    notice(`Results of ${test.id} deleted (${data.executions} execution(s)).`, "info");
+    closeDrawer();
+    await load();
+  } catch (error) {
+    adminMessage(`Delete failed: ${error.message}`, true);
+  } finally {
+    el["d-delete"].disabled = false;
+  }
+}
+
 async function runAll() {
   if (!armed(el["run-all"], "Click again to run every test")) return;
   el["run-all"].disabled = true;
@@ -596,6 +630,7 @@ el["d-artifact"].addEventListener("change", () => { fillFileSelect(); loadArtifa
 el["d-file"].addEventListener("change", loadArtifactFile);
 el["d-rerun"].addEventListener("click", rerunSelected);
 el["d-cancel"].addEventListener("click", cancelSelected);
+el["d-delete"].addEventListener("click", deleteSelected);
 window.addEventListener("hashchange", () => { state.filters = readFilters(); renderAll(); });
 
 load().then(() => { if (state.filters.test) openDrawer(state.filters.test); });

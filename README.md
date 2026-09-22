@@ -19,7 +19,7 @@ workflow stops working on a system.
           |                                <start>_<run slug>/record.json + logs, one dir per execution
           v
   dashboards   python3 -m probe serve         matrix of workflows by system, history, logs
-                                              Refresh makes the local copy match the bucket
+                                              Refresh reloads the definitions and the results
 ```
 
 | Who runs the tests | How |
@@ -42,13 +42,13 @@ Run `workflow/workflow.yaml` on the platform, from the GitHub action or by hand.
 | Resource | Where the dashboards run and where tests started from the admin dashboard are launched: the user workspace or a cluster login node with the `pw` CLI, `python3` and `git`. |
 | API key | A platform API key of yours (account settings, API keys). The run's own credential stops working when the run completes, so the dashboards use this key afterwards. In the GitHub action it is the platform's repository secret. |
 | Test definitions | Repository, branch and directory of the test files. |
-| Results | Bucket and path of the results. Required. Restored when the run starts; `Refresh` replaces the dashboard's copy with the bucket's content, so results deleted from the bucket disappear too. |
+| Results | Bucket and path of the results. Required. Restored when the run starts; `Refresh` replaces the dashboard's copy with the bucket's content, so results deleted from the bucket disappear too. `Refresh` also re-fetches the test definitions from their repository. |
 | PROBE code | Repository and branch of this code. |
 
 The run completes once both endpoints answer; the dashboards keep running:
 
 - `probe-<run slug>`: read-only, safe to share.
-- `probe-admin-<run slug>`: also `Run all`, `Rerun test`, `Cancel run`.
+- `probe-admin-<run slug>`: also `Run all`, `Rerun test`, `Cancel run`, and `Delete results` for a test whose definition is gone.
 
 `pw endpoints list` shows their URLs. Take them down with
 `pw endpoints delete probe-<run slug>` and `pw endpoints delete probe-admin-<run slug>`.
@@ -88,6 +88,11 @@ One JSON file per test. The id `<platform>/<user>/<workflow_name>/<name>` comes 
 fields, not from the file's location; `<platform>/<user>/<workflow_name>/<name>.json` is
 the recommended place and `python3 -m probe list` notes files found elsewhere. Two files
 with the same id, or an unknown key, are errors.
+
+To change a test, edit its file, push, and press `Refresh` on the dashboard (the next
+`run-tests.yaml` run fetches the repository anyway). To remove one, delete its file,
+push, press `Refresh`, and then `Delete results` on the admin dashboard to drop its
+history from the bucket; until then it shows as a test without a definition.
 
 ```json
 {

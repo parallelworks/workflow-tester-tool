@@ -65,7 +65,7 @@ async function main() {
     await send("Page.enable");
     await send("Page.navigate", { url: URL });
     await until(`document.querySelectorAll("#tests-body tr[data-id]").length > 0`, 15000, "rows");
-    check("table renders rows", (await rows()) === 4, `rows=${await rows()}`);
+    check("table renders rows", (await rows()) === 5, `rows=${await rows()}`);
     check("admin: Run all visible", !(await hidden("#run-all")));
 
     // theme
@@ -83,7 +83,7 @@ async function main() {
     await until(`document.querySelectorAll("#tests-body tr[data-id]").length === 1`, 3000, "search");
     check("search filter", (await rows()) === 1);
     await click("#f-clear");
-    check("clear filters", (await rows()) === 4 && (await evaluate(`document.getElementById("f-search").value`)) === "");
+    check("clear filters", (await rows()) === 5 && (await evaluate(`document.getElementById("f-search").value`)) === "");
     await evaluate(`(() => { const c = document.getElementById("f-changes"); c.checked = true; c.dispatchEvent(new Event("change")); })()`);
     check("changes only (none changed)", (await rows()) === 0, `rows=${await rows()}`);
     await click("#f-clear");
@@ -140,11 +140,28 @@ async function main() {
     check("rerun appended a record", countAfter === countBefore + 1, `${countBefore} -> ${countAfter}`);
     await click("#d-close");
 
+    // delete the results of a test without a definition
+    const old = "activate.parallel.works/alvaro/oldwf/oldtest";
+    await click(`#tests-body tr[data-id="${old}"]`);
+    await until(`!document.getElementById("d-delete").hidden`, 5000, "delete button");
+    check("delete offered only for undefined tests", await evaluate(`document.getElementById("d-rerun").disabled`));
+    await click("#d-delete");
+    check("delete asks for a second click", (await text("#d-delete")).includes("Click again"), await text("#d-delete"));
+    await click("#d-delete");
+    try {
+      await until(`!document.getElementById("notice").hidden && document.getElementById("notice").textContent.includes("deleted")`, 10000, "delete notice");
+    } catch (error) {
+      console.log("DEBUG admin message:", await text("#d-admin-msg"), "| notice:", await text("#notice"), "| button:", await text("#d-delete"), "hidden:", await hidden("#d-delete"), "disabled:", await evaluate(`document.getElementById("d-delete").disabled`));
+      throw error;
+    }
+    await until(`document.querySelectorAll("#tests-body tr[data-id]").length === 4`, 10000, "row removed");
+    check("results deleted from the bucket store", !fs.existsSync(CALLS_LOG.replace("calls.log", "bucket/alvaro/gcpbucket/probe/results/" + old)));
+
     // run all: two clicks, then a refused overlapping request
     await click("#run-all");
     check("run all asks for a second click", (await text("#run-all")).includes("Click again"), await text("#run-all"));
     await click("#run-all");
-    await until(`!document.getElementById("notice").hidden`, 10000, "run all notice");
+    await until(`/Suite run started|Could not start/.test(document.getElementById("notice").textContent)`, 10000, "run all notice");
     check("run all starts", (await text("#notice")).includes("Suite run started"), await text("#notice"));
     await sleep(500);
     await click("#run-all");

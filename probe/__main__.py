@@ -9,7 +9,9 @@ from pathlib import Path
 from . import __version__
 from .definitions import load_tests, location_notes
 from .runner import Options, clean_host, run_suite
+from .pw import FetchError
 from .server import WEB_DIR, Config, serve
+from .tests_source import fetch_tests
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +56,15 @@ def build_parser() -> argparse.ArgumentParser:
     srv.add_argument("--admin", action="store_true", help="enable the run and cancel actions")
     srv.add_argument("--bucket", metavar="URI", default=os.environ.get("PROBE_RESULTS_BUCKET") or None,
                      help="bucket path the runs started from the dashboard sync their results to")
+    srv.add_argument("--tests-repo", metavar="URL", help="git repository Refresh re-fetches the test definitions from")
+    srv.add_argument("--tests-branch", default="main", metavar="BRANCH")
+    srv.add_argument("--tests-directory", default="tests", metavar="DIR", help="directory inside that repository")
+
+    fetch = sub.add_parser("fetch-tests", help="replace a tests directory with a directory of a git repository")
+    fetch.add_argument("--repo", required=True, metavar="URL")
+    fetch.add_argument("--branch", default="main", metavar="BRANCH")
+    fetch.add_argument("--directory", default="tests", metavar="DIR", help="directory inside the repository")
+    fetch.add_argument("--out", default="tests", metavar="DIR", help="local tests directory to replace")
     srv.add_argument("--web", default=str(WEB_DIR), metavar="DIR", help=argparse.SUPPRESS)
 
     lst = sub.add_parser("list", help="list the test definitions and report invalid ones")
@@ -76,8 +87,17 @@ def main(argv=None) -> int:
         return run_suite(opts)
     if args.command == "serve":
         cfg = Config(results_dir=Path(args.results), tests_dir=Path(args.tests),
-                     web_dir=Path(args.web), prefix=args.prefix, admin=args.admin, bucket=args.bucket)
+                     web_dir=Path(args.web), prefix=args.prefix, admin=args.admin, bucket=args.bucket,
+                     tests_repo=args.tests_repo, tests_branch=args.tests_branch, tests_directory=args.tests_directory)
         serve(cfg, args.host, args.port)
+        return 0
+    if args.command == "fetch-tests":
+        try:
+            count = fetch_tests(args.repo, args.branch, args.directory, Path(args.out))
+        except FetchError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 1
+        print("%d test definition file(s) in %s from %s@%s (%s)" % (count, args.out, args.repo, args.branch, args.directory))
         return 0
     if args.command == "list":
         tests, errors = load_tests(Path(args.tests))
