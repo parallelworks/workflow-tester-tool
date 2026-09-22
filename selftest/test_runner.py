@@ -45,14 +45,13 @@ class RunnerTests(RunnerCase):
         self.assertEqual(outcome["cleanup"], "ok")
         self.assertTrue(outcome["endpoint"].startswith("webshell-mock-"))
         self.assertTrue(outcome["run_slug"].startswith("mock-"))
-        self.assertIsNone(outcome["http"])
         self.assertEqual(record["workflow"]["commit"], self.commit)
         self.assertEqual(record["workflow"]["repo"], helpers.REPO_URL)
         self.assertEqual(record["target"], {"platform": "activate.parallel.works", "user": "alvaro", "system": "gcpsmall",
                                             "resource": "pw://alvaro/gcpsmall", "type": "cluster", "node": "controller"})
         self.assertEqual(record["pw_cli"], "v7.99.0-mock")
         self.assertTrue(record["suite_run"].startswith("probe-"))
-        self.assertEqual(set(outcome), {"status", "failed_at", "error", "phase", "http", "cleanup", "run_slug",
+        self.assertEqual(set(outcome), {"status", "failed_at", "error", "phase", "cleanup", "run_slug",
                                         "endpoint", "started_at", "ended_at", "duration_s"})
         self.assertEqual(record["test"], {"id": CONTROLLER, "workflow_name": "webshell"})
         # artifacts
@@ -81,7 +80,6 @@ class RunnerTests(RunnerCase):
         outcome = self.records("activate.parallel.works/alvaro/script_submitter/gcpsmall-controller")[0]["outcome"]
         self.assertEqual(outcome["status"], "pass")
         self.assertIsNone(outcome["endpoint"])
-        self.assertIsNone(outcome["http"])
         self.assertEqual(outcome["cleanup"], "ok")
         self.assertFalse(any(c.startswith("endpoints delete") for c in self.calls()))
 
@@ -167,32 +165,6 @@ class RunnerTests(RunnerCase):
         self.assertEqual((outcome["status"], outcome["failed_at"]), ("fail", "run"))
         self.assertIn("timeout after 3s; run canceled", outcome["error"])
         self.assertTrue(any(c.startswith("--platform-host activate.parallel.works workflows runs cancel") for c in self.calls()))
-
-    def test_http_expect_pass_and_fail(self):
-        self.write_test("webshell/gcpsmall-controller.json", definition(http_expect=[200, 302]))
-        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}},
-                        "endpoint": {WEBSHELL: "webshell"}})
-        with mock.patch.object(runner, "http_status", return_value=302):
-            code, _ = self.run_suite()
-        self.assertEqual(code, 0)
-        outcome = self.records(CONTROLLER)[0]["outcome"]
-        self.assertEqual((outcome["status"], outcome["http"]), ("pass", 302))
-        with mock.patch.object(runner, "http_status", return_value=503), mock.patch.object(runner, "HTTP_ATTEMPTS", 1):
-            code, _ = self.run_suite()
-        self.assertEqual(code, 1)
-        outcome = self.records(CONTROLLER)[1]["outcome"]
-        self.assertEqual((outcome["status"], outcome["failed_at"], outcome["http"]), ("fail", "http", 503))
-        self.assertIn("expected 200 or 302", outcome["error"])
-        self.assertEqual(outcome["cleanup"], "ok")
-
-    def test_http_expect_without_endpoint_fails_at_endpoint(self):
-        self.write_test("webshell/gcpsmall-controller.json", definition(http_expect=200))
-        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}}, "endpoint": {}})
-        with mock.patch.object(runner, "ENDPOINT_LIST_ATTEMPTS", 1):
-            code, _ = self.run_suite()
-        self.assertEqual(code, 1)
-        outcome = self.records(CONTROLLER)[0]["outcome"]
-        self.assertEqual((outcome["status"], outcome["failed_at"]), ("fail", "endpoint"))
 
     def test_keep_leaves_endpoint(self):
         self.write_test("webshell/gcpsmall-controller.json", definition())

@@ -11,8 +11,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,10 +25,8 @@ TERMINAL = {"completed", "error", "canceled", "failed"}
 LAUNCH_ATTEMPTS = 3
 LAUNCH_BACKOFF_S = (10, 30)
 MAX_POLL_ERRORS = 20
-ENDPOINT_LIST_ATTEMPTS = 4
 ENDPOINT_GONE_WAIT_S = 60
 LEFTOVER_WAIT_S = 120
-HTTP_ATTEMPTS = 3
 CLEANUP_RANK = {"ok": 0, "kept": 0, "unknown": 1, "leftover": 2}
 
 STOP = threading.Event()
@@ -108,25 +104,6 @@ class TestLog:
             if self._fh:
                 self._fh.close()
                 self._fh = None
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-
-def http_status(url: str, token: Optional[str] = None, timeout: int = 20) -> int:
-    """HTTP status of a GET on url without following redirects; 0 when no answer."""
-    headers = {"Authorization": "Bearer " + token} if token else {}
-    request = urllib.request.Request(url, headers=headers)
-    opener = urllib.request.build_opener(_NoRedirect)
-    try:
-        with opener.open(request, timeout=timeout) as response:
-            return int(response.status)
-    except urllib.error.HTTPError as exc:
-        return int(exc.code)
-    except Exception:
-        return 0
 
 
 class Suite:
@@ -269,7 +246,7 @@ class TestRun:
         self.target = test.target
         self.timeout_s = self.opts.timeout_s or test.timeout_s
         self.outcome = {
-            "status": None, "failed_at": None, "error": None, "phase": None, "http": None,
+            "status": None, "failed_at": None, "error": None, "phase": None,
             "cleanup": None, "run_slug": None, "endpoint": None,
             "started_at": iso(self.started), "ended_at": None, "duration_s": None,
         }
@@ -325,9 +302,8 @@ class TestRun:
                     return self.finish()
                 status = self.poll()
                 self.verdict(status)
-                endpoints = self.find_endpoints()
-                self.check_http(endpoints)
                 self.set_ended()
+                endpoints = self.find_endpoints()
             self.teardown(endpoints)
             return self.finish()
         except Exception as exc:  # a bug must still leave a record behind
@@ -472,49 +448,17 @@ class TestRun:
 
     def find_endpoints(self) -> List[Endpoint]:
         """Endpoints the run registered: every name ending in -<slug>. A run that
-        completed has already seen its endpoint listed, so one listing is enough
-        unless http_expect needs it."""
+        completed has already seen its endpoint listed, so one listing is enough."""
         suffix = "-%s" % self.slug
-        expect_some = self.test.http_expect is not None and self.outcome["status"] == "pass"
-        attempts = ENDPOINT_LIST_ATTEMPTS if expect_some else 1
-        for attempt in range(1, attempts + 1):
-            try:
-                listed = self.pw.endpoints()
-            except PwError as exc:
-                self.log("endpoint listing failed: %s" % exc)
-                self.endpoint_list_failed = True
-                return []
-            found = [e for e in listed if e.name.endswith(suffix)]
-            if found or attempt == attempts:
-                self.log("endpoints named *%s: %s" % (suffix, ", ".join(e.name for e in found) or "none"))
-                return found
-            STOP.wait(5)
-        return []
-
-    def check_http(self, endpoints: List[Endpoint]) -> None:
-        if self.test.http_expect is None or self.outcome["status"] != "pass":
-            return
-        if not endpoints:
-            self.fail("endpoint", "run completed but no endpoint named *-%s is listed" % self.slug)
-            return
-        url = endpoints[0].url
-        if url.startswith("/"):
-            url = "https://%s%s" % (self.test.platform, url)
-        shown = url.split("?")[0]
-        token = os.environ.get("PW_API_KEY") or None
-        if not token:
-            self.log("PW_API_KEY is not set; probing %s anonymously" % shown)
-        code = 0
-        for attempt in range(1, HTTP_ATTEMPTS + 1):
-            code = http_status(url, token)
-            self.log("HTTP %s from %s (attempt %d)" % (code, shown, attempt))
-            if code in self.test.http_expect or STOP.is_set():
-                break
-            STOP.wait(5)
-        self.outcome["http"] = code or None
-        if code not in self.test.http_expect:
-            self.fail("http", "HTTP %s from %s, expected %s" % (
-                code, shown, " or ".join(str(c) for c in self.test.http_expect)))
+        try:
+            listed = self.pw.endpoints()
+        except PwError as exc:
+            self.log("endpoint listing failed: %s" % exc)
+            self.endpoint_list_failed = True
+            return []
+        found = [e for e in listed if e.name.endswith(suffix)]
+        self.log("endpoints named *%s: %s" % (suffix, ", ".join(e.name for e in found) or "none"))
+        return found
 
     def teardown(self, endpoints: List[Endpoint]) -> None:
         self.outcome["endpoint"] = ",".join(e.name for e in endpoints) or None

@@ -13,7 +13,7 @@ DEFAULT_TIMEOUT_S = 1800
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 KNOWN_KEYS = {
     "name", "platform", "user", "workflow_name", "workflow", "timeout_s", "inputs",
-    "http_expect", "warm_marker", "leftover_patterns",
+    "warm_marker", "leftover_patterns",
 }
 WORKFLOW_KEYS = {"repo", "path", "ref"}
 
@@ -87,7 +87,6 @@ class TestDef:
     workflow: dict
     timeout_s: int
     inputs: dict
-    http_expect: Optional[List[int]]
     warm_marker: List[str]
     leftover_patterns: List[str]
 
@@ -158,15 +157,6 @@ def load_definition(path: Path) -> TestDef:
     if not isinstance(inputs, dict):
         raise DefinitionError("'inputs' must be an object (the pw workflows run -i payload)")
 
-    http_expect = data.get("http_expect")
-    if http_expect is not None:
-        if isinstance(http_expect, int) and not isinstance(http_expect, bool):
-            http_expect = [http_expect]
-        if (not isinstance(http_expect, list) or not http_expect
-                or not all(isinstance(c, int) and not isinstance(c, bool) and 100 <= c <= 599
-                           for c in http_expect)):
-            raise DefinitionError("'http_expect' must be an HTTP status code or a list of codes")
-
     warm_marker = data.get("warm_marker", [])
     if isinstance(warm_marker, str):
         warm_marker = [warm_marker]
@@ -181,7 +171,7 @@ def load_definition(path: Path) -> TestDef:
     return TestDef(
         path=path, platform=platform, user=user, workflow_name=workflow_name, name=name,
         workflow={k: workflow[k].strip() for k in WORKFLOW_KEYS}, timeout_s=timeout_s,
-        inputs=inputs, http_expect=http_expect, warm_marker=[m.strip() for m in warm_marker],
+        inputs=inputs, warm_marker=[m.strip() for m in warm_marker],
         leftover_patterns=[p.strip() for p in leftover_patterns],
     )
 

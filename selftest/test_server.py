@@ -20,7 +20,7 @@ def record(status, started, slug="mock-abc", suite="probe-1", failed_at=None, er
                      "ref": "canary", "commit": "0" * 40},
         "target": {"platform": "activate.parallel.works", "user": "alvaro", "system": "gcpsmall",
                    "resource": "pw://alvaro/gcpsmall", "type": "cluster", "node": "controller"},
-        "outcome": {"status": status, "failed_at": failed_at, "error": error, "phase": None, "http": None,
+        "outcome": {"status": status, "failed_at": failed_at, "error": error, "phase": None,
                     "cleanup": "ok", "run_slug": slug if status != "skip" else None, "endpoint": None,
                     "started_at": started, "ended_at": started, "duration_s": 10},
     }

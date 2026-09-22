@@ -22,7 +22,6 @@ class DefinitionTests(ProbeCase):
         del data["timeout_s"]
         test = load_definition(self.write_test("t.json", data))
         self.assertEqual(test.timeout_s, 1800)
-        self.assertIsNone(test.http_expect)
         self.assertEqual(test.warm_marker, [])
 
     def test_rejects_missing_and_bad_fields(self):
@@ -36,7 +35,6 @@ class DefinitionTests(ProbeCase):
             ({"workflow": {"repo": "x", "path": "y"}}, "'workflow'"),
             ({"workflow": {"repo": "github.com/a/b@main", "path": "y", "ref": "main"}}, "@ref"),
             ({"extra": 1}, "unknown key"),
-            ({"http_expect": "200"}, "'http_expect'"),
             ({"leftover_patterns": "ttyd"}, "'leftover_patterns'"),
             ({"user": "a/b"}, "'user'"),
         ]
@@ -48,9 +46,8 @@ class DefinitionTests(ProbeCase):
                 load_definition(path)
             self.assertIn(needle, str(ctx.exception), str(overrides))
 
-    def test_http_expect_and_marker_normalisation(self):
-        test = load_definition(self.write_test("t.json", definition(http_expect=307, warm_marker="${HOME}/x")))
-        self.assertEqual(test.http_expect, [307])
+    def test_marker_normalisation(self):
+        test = load_definition(self.write_test("t.json", definition(warm_marker="${HOME}/x")))
         self.assertEqual(test.warm_marker, ["${HOME}/x"])
 
     def test_name_comes_from_the_file_not_the_path(self):

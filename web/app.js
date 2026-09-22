@@ -337,7 +337,7 @@ function fillDrawerHeader(test) {
     fact("System", test.system) + fact("Node", test.node) + fact("Type", test.type) + fact("Resource", test.resource, true) +
     fact("Workflow", test.launch_target || (w.repo ? `${w.repo}/${w.path}@${w.ref}` : null), true) +
     fact("Commit", w.commit, true) + fact("Run", o.run_slug, true) + fact("Endpoint", o.endpoint, true) +
-    fact("Phase", o.phase) + fact("HTTP", o.http) + fact("Started", o.started_at ? fmtDate(o.started_at) : null) +
+    fact("Phase", o.phase) + fact("Started", o.started_at ? fmtDate(o.started_at) : null) +
     fact("Duration", o.duration_s != null ? fmtDuration(o.duration_s) : null) + fact("Suite run", rec.suite_run, true) +
     fact("pw CLI", rec.pw_cli) + fact("Records", test.record_count) +
     (test.defined ? fact("Definition", test.definition_path, true) : `<div><dt>Definition</dt><dd class="is-bad">not in the tests directory</dd></div>`);
