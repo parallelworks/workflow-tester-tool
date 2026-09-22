@@ -59,6 +59,10 @@ From the admin dashboard, a test shows as running until its record is written; i
 results reach the bucket right after. A request that overlaps a run in progress is
 refused.
 
+Up to 8 tests run at the same time (`--workers` on the command line); the rest queue.
+Two tests of the same workflow on the same system never overlap, so they cannot
+install the same software into the same directory at once.
+
 The GitHub action **Run PROBE tests** deploys `workflow/run-tests.yaml`, waits, and
 turns red when a test fails. Both actions authenticate with the repository secrets
 `ACTIVATE_PARALLEL_WORKS` and `ACTIVATE_HPC_MIL` (platform API keys). A `schedule`
