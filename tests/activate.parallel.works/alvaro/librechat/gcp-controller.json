@@ -1,0 +1,29 @@
+{
+  "name": "gcp-controller",
+  "platform": "activate.parallel.works",
+  "user": "alvaro",
+  "workflow_name": "librechat",
+  "workflow": {
+    "repo": "github.com/parallelworks/workflows",
+    "path": "workflows/librechat/yamls/general.yaml",
+    "ref": "canary"
+  },
+  "timeout_s": 2400,
+  "warm_marker": "${HOME}/pw/software/containers/librechat",
+  "leftover_patterns": [
+    "librechat",
+    "mongod",
+    "meilisearch",
+    "pw endpoints run"
+  ],
+  "inputs": {
+    "resource": "pw://alvaro/gcpsmall",
+    "cluster": {
+      "scheduler": false
+    },
+    "service": {
+      "librechat_dir": "${HOME}/pw/LibreChat",
+      "domain_client": "ACTIVATE"
+    }
+  }
+}

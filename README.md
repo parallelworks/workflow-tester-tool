@@ -1,65 +1,118 @@
 # PROBE
 
-PROBE runs compatibility tests for [Parallel Works ACTIVATE](https://parallelworks.com)
-workflows across the systems connected to a platform and shows the results in a
-dashboard. Each test launches one workflow from a git repository with fixed inputs on
-one system, waits for the verdict, cleans up, and appends a record. Runs repeat on a
-schedule, so a workflow that stops working on a system shows up as a regression.
+PROBE checks that [Parallel Works ACTIVATE](https://parallelworks.com) workflows still
+work on the systems connected to a platform. A test launches one workflow with fixed
+inputs on one system. PROBE waits for the run to end, deletes the endpoint the run
+registered, and records the result. Repeated over time, the records show when a
+workflow stops working on a system.
 
-## How it works
+## How it fits together
 
 ```
-tests/<platform>/<user>/<workflow_name>/<test>.json      one file per test
-   |
-   |  python3 -m probe run          launches with the pw CLI, one record per execution
-   v
-results/<platform>/<user>/<workflow_name>/<test>/
-   records.jsonl                                       append only
-   <start time>_<run slug>/run.log, launch.json, view.json, errors.txt
-   |
-   |  python3 -m probe serve        dashboard: matrix of workflows by system, history, logs
-   v
-pw endpoint  probe-<run slug>
+  test definitions (git)                      tests/<platform>/<user>/<workflow_name>/<name>.json
+          |
+          v
+  runner   python3 -m probe run  ──pw workflows run──>  the workflow runs on the target system
+          |                                             pass = the run completes
+          v
+  results bucket (ground truth)      <bucket>/<path>/<platform>/<user>/<workflow_name>/<name>/
+          |                                <start>_<run slug>/record.json + logs, one dir per execution
+          v
+  dashboards   python3 -m probe serve         matrix of workflows by system, history, logs
+                                              Refresh reloads the definitions and the results
 ```
 
-The runner and the dashboard are one Python package (`probe/`, standard library only,
-Python 3.8 or newer). The test definitions can live in this repository or in any other
-git repository, for example a deployment's own GitLab.
+| Who runs the tests | How |
+|---|---|
+| Admin dashboard | `Run all`, or open a test and `Rerun test` |
+| GitHub action **Run PROBE tests** | manual, with `all` or a list of test files |
+| Platform, by hand | `pw workflows run --trust -i inputs.json /abs/path/workflow/run-tests.yaml` |
+| Shell with the `pw` CLI | `python3 -m probe run ...` |
 
-## Launching PROBE on the platform
+Every runner uploads each test's results to the bucket as soon as the test finishes.
+The dashboards are served by `workflow/workflow.yaml` (GitHub action **Start PROBE
+dashboard**).
 
-Register `workflow/workflow.yaml` as a workflow (or run it directly with
-`pw workflows run /abs/path/workflow/workflow.yaml -i inputs.json`) and fill in the form:
+## Start the dashboards
+
+Run `workflow/workflow.yaml` on the platform, from the GitHub action or by hand.
 
 | Input | Meaning |
 |---|---|
-| Resource | Where PROBE runs: the user workspace or the login node of a connected cluster. It needs the `pw` CLI (installed with the agent), `python3` and `git`. |
-| Test definitions | Repository, branch and directory holding the test files. Default: this repository, `main`, `tests`. |
-| Test filter | Optional. Only tests whose id contains this text or matches this glob. |
-| Results | Bucket and path where results are kept between runs. Optional; without a bucket the results live only as long as the run. |
-| Schedule | Repeat every N hours. 0 runs the suite once. |
-| Run tests | No serves the dashboard of stored results without running anything. |
-| Serve dashboard | Registers the endpoint `probe-<run slug>`. |
-| Serve admin dashboard | Also registers `probe-admin-<run slug>`, where tests can be rerun and runs canceled. |
-| PROBE code | Repository and branch the runner and dashboard are fetched from. |
+| Resource | Where the dashboards run and where tests started from the admin dashboard are launched: the user workspace or a cluster login node with the `pw` CLI, `python3` and `git`. |
+| API key | A platform API key of yours (account settings, API keys). The run's own credential stops working when the run completes, so the dashboards use this key afterwards. In the GitHub action it is the platform's repository secret. |
+| Test definitions | Repository, branch and directory of the test files. |
+| Results | Bucket and path of the results. Required. Restored when the run starts; `Refresh` replaces the dashboard's copy with the bucket's content, so results deleted from the bucket disappear too. `Refresh` also re-fetches the test definitions from their repository. |
+| PROBE code | Repository and branch of this code. |
 
-The run stays alive for as long as the dashboard should be reachable. Cancel the run
-to take the dashboard down. Only the tests whose `platform` and `user` match the
-run's platform and user are executed.
+The run completes once both endpoints answer; the dashboards keep running:
 
-The GitHub Actions workflow `.github/workflows/run-workflow.yml` launches a
-registered PROBE workflow from CI with the same inputs.
+- `probe-<run slug>`: read-only, safe to share.
+- `probe-admin-<run slug>`: also `Run all`, `Rerun test`, `Cancel run`, and `Delete results` for a test whose definition is gone.
 
-## Test definitions
+`pw endpoints list` shows their URLs. Take them down with
+`pw endpoints delete probe-<run slug>` and `pw endpoints delete probe-admin-<run slug>`.
 
-A test is one self-contained JSON file. Files can be anywhere under the tests
-directory; the recommended layout is `<platform>/<user>/<workflow_name>/<test>.json`.
-The test id is `<platform>/<user>/<workflow_name>/<file name without .json>`, built
-from the file's fields and name, not from its location. Two files with the same id are
-an error, as is any unknown key.
+## Run tests
+
+From the admin dashboard, a test shows as running until its record is written; its
+results reach the bucket right after. A request that overlaps a run in progress is
+refused.
+
+Up to 8 tests run at the same time (`--workers` on the command line); the rest queue.
+Two tests of the same workflow on the same system never overlap, so they cannot
+install the same software into the same directory at once.
+
+The GitHub action **Run PROBE tests** deploys `workflow/run-tests.yaml`, waits, and
+turns red when a test fails. Both actions authenticate with the repository secrets
+`ACTIVATE_PARALLEL_WORKS` and `ACTIVATE_HPC_MIL` (platform API keys). A `schedule`
+trigger can be added to `run-tests.yml` to run the suite periodically.
+
+From a shell (the `pw` context selects platform and user; `PW_PLATFORM_HOST` and
+`PW_USER` override it):
+
+```bash
+python3 -m probe list --tests tests                                  # validate the definitions
+python3 -m probe run  --tests tests --results results --bucket pw://alvaro/gcpbucket/probe/results --all
+python3 -m probe run  --tests tests --results results --bucket pw://alvaro/gcpbucket/probe/results \
+    --test activate.parallel.works/alvaro/webshell/gcpsmall-controller.json
+python3 -m probe run  --tests tests --results results --dry-run      # list what would run
+python3 -m probe serve --results results --tests tests --port 8080 [--admin] [--bucket URI]
+```
+
+Other selectors: `--filter` (id substring or glob), `--id` (exact id). `--keep` leaves
+the endpoints running. Without `--bucket` the results stay local. Exit codes: 0 every
+test passed or was skipped, 1 a test failed, 2 an invalid definition, a bad selection
+or a failed bucket upload. Interrupting the runner cancels its platform runs and records
+them as failed. Only tests whose `platform` and `user` match the runner's own are run.
+
+## Test definition
+
+One JSON file per test. The id `<platform>/<user>/<workflow_name>/<name>` comes from the
+fields, not from the file's location; `<platform>/<user>/<workflow_name>/<name>.json` is
+the recommended place and `python3 -m probe list` notes files found elsewhere. Two files
+with the same id, or an unknown key, are errors.
+
+### Edit or remove a test
+
+Tests are files in the tests repository, so both are git changes:
+
+1. **Edit**: change the JSON file (inputs, `timeout_s`, ...), run
+   `python3 -m probe list --tests tests` to check it, commit and push.
+2. **Remove**: delete the JSON file, commit and push.
+3. Press `Refresh` on the dashboard. It re-fetches the definitions, so the change
+   shows at once. A run of `run-tests.yaml` fetches them anyway.
+4. After a removal the test's history is still in the bucket, so the dashboard keeps
+   showing it as a test without a definition. Open it on the admin dashboard and press
+   `Delete results` to drop that history too (or `pw buckets rm -r <bucket>/<path>/<id>/`).
+
+Renaming a test (a new `name`) is a removal plus an addition: the history stays under
+the old id until you delete it. Tests that came from the workflows repository are
+re-created by the next import, so remove or change them there as well.
 
 ```json
 {
+  "name": "gcpsmall-controller",
   "platform": "activate.parallel.works",
   "user": "alvaro",
   "workflow_name": "webshell",
@@ -68,7 +121,6 @@ an error, as is any unknown key.
     "path": "workflows/webshell/yamls/general.yaml",
     "ref": "canary"
   },
-  "kind": "endpoint",
   "timeout_s": 1200,
   "warm_marker": "${HOME}/pw/software/noVNC-1.3.0/ttyd.x86_64",
   "leftover_patterns": ["ttyd", "pw endpoints run"],
@@ -81,59 +133,68 @@ an error, as is any unknown key.
 
 | Field | Meaning |
 |---|---|
+| `name` | Test name, unique within its platform, user and workflow. |
 | `platform`, `user` | Platform host and user that run the test. |
-| `workflow_name` | Groups tests of the same workflow, for example the workflow's directory name. |
-| `workflow.repo`, `workflow.path` | Repository (host and path, or a full git URL) and path of the workflow YAML. |
-| `workflow.ref` | Branch, tag or commit. A branch follows development (canary test); a tag or commit pins a release. |
-| `kind` | `batch`: pass when the run completes. `endpoint`: pass when the run completes; the `pw` endpoints named `*-<run slug>` are deleted afterwards. |
-| `timeout_s` | Seconds to wait for the verdict. Default 1800. On timeout the run is canceled and the test fails. |
+| `workflow_name` | Groups the tests of one workflow, for example its directory name. |
+| `workflow.repo`, `.path`, `.ref` | Repository (host and path, or a git URL), path of the workflow YAML, and branch, tag or commit. A branch follows development; a tag or commit pins a release. |
+| `timeout_s` | Seconds to wait for the run, default 1800. On timeout the run is canceled and the test fails. |
 | `inputs` | Passed verbatim to `pw workflows run -i`. |
-| `http_expect` | Optional, endpoint tests. HTTP status code, or list of codes, the endpoint URL must answer with before it is deleted. Off by default: the workflow already checks its endpoint before completing. |
 | `warm_marker` | Optional. Path, or list of paths, on the target system. All present before launch: phase `warm`; none: `cold`; some: `partial`. |
-| `leftover_patterns` | Optional. Process command-line patterns that must be gone from the target system after cleanup; on compute tests the scheduler queue must be empty too. Processes that existed before the launch are ignored. |
+| `leftover_patterns` | Optional. Process command-line patterns that must be gone from the target system after cleanup; compute tests also require an empty scheduler queue. Processes that existed before the launch are ignored. |
+| `leftover_commands` | Optional. `{name: shell snippet}`; each snippet runs on the target after cleanup and must print `0`, for example `docker ps -q \| wc -l` for containers `ps` cannot see. |
+| `setup` | Optional. Shell snippet run on the target before the launch, for example to seed input files. Must be safe to repeat. |
 
-The verdict is the run status. A workflow is responsible for failing its run when its
-service is not healthy and for completing once it is; PROBE does not judge the service
-itself unless `http_expect` asks for it.
+What happens to a test:
 
-Before launching, PROBE checks the target with `pw cluster ls` (or `pw kube ls` for
-Kubernetes). A resource that is off or not listed skips the test instead of failing it.
+```
+  gate      pw cluster ls (or pw kube ls): resource off or not listed  ──>  skip
+  launch    pw workflows run <YAML at ref> -i inputs                    ──>  fail at launch
+  wait      pw workflows runs view every 15 s until the run ends        ──>  fail at run (error, timeout)
+  verdict   run completed                                               ──>  pass
+  cleanup   pw endpoints delete *-<run slug>; leftover check            ──>  cleanup ok | leftover | unknown
+  record    record.json + logs written, uploaded to the bucket
+```
 
-The target system is read from `inputs.resource` or `inputs.cluster.resource`: a name,
-a `pw://user/name` URI or a resource object. `scheduler: true` marks the test as a
-compute-node test.
+The workflow itself is responsible for failing its run when its service is not healthy
+and completing once it is; PROBE trusts the run status. Only workflows that run to
+completion can be tested. Workflows built on the older session pattern, whose YAML has
+a `sessions:` block and whose run stays alive to serve the session, are not supported:
+their run never completes, so a test of one would only time out. The target system comes from
+`inputs.resource` or `inputs.cluster.resource` (a name, a `pw://user/name` URI or a
+resource object); `scheduler: true` marks a compute-node test.
 
 ## Results
 
 ```
-results/<platform>/<user>/<workflow_name>/<test>/
-|-- records.jsonl                         one line per execution, append only
-|-- 2026-09-21T150902Z_swift-falcon/      <start time>_<run slug>
+<bucket>/<path>/<platform>/<user>/<workflow_name>/<name>/
+|-- 2026-09-21T150902Z_swift-falcon/      one directory per execution: <start time>_<run slug>
+|   |-- record.json                       the record (below)
 |   |-- run.log                           what PROBE did and saw, with timestamps
 |   |-- launch.json                       the run object returned by pw workflows run
 |   |-- view.json                         the last pw workflows runs view of the run
 |   `-- errors.txt                        pw workflows runs errors, failed runs only
-`-- 2026-09-21T150902Z_launch-failed/     a launch that never produced a run
+|-- 2026-09-21T150902Z_skip/              a skipped execution: record.json and run.log
+`-- 2026-09-21T150902Z_launch-failed/     a launch that produced no run
 ```
 
-The current state of a test is the last line of its `records.jsonl`; the history is
-every line. Skipped tests append a line but no artifact directory. Nothing is ever
-overwritten, and readers ignore malformed lines. With a results bucket configured, the
-workflow restores the tree before a suite and syncs it back afterwards.
-
-One record:
+The current state of a test is the record of its newest execution; the history is all of
+them. Every execution writes only its own directory and uploads it when it finishes, so
+runners started anywhere share one bucket without overwriting each other. A directory
+without `record.json` is an execution still in progress. Readers ignore malformed
+records. To reclaim space, delete the large files of old executions but keep
+`record.json`, or the history loses that execution.
 
 ```json
 {
   "schema": 1,
   "suite_run": "probe-2026-09-21T15:09Z",
   "pw_cli": "v7.99.0",
-  "test": {"id": "activate.parallel.works/alvaro/webshell/gcpsmall-compute", "workflow_name": "webshell", "kind": "endpoint"},
+  "test": {"id": "activate.parallel.works/alvaro/webshell/gcpsmall-compute", "workflow_name": "webshell"},
   "workflow": {"repo": "github.com/parallelworks/workflows", "path": "workflows/webshell/yamls/general.yaml",
                "ref": "canary", "commit": "031eb00c31c1af10de5868c78865e3000004e583"},
   "target": {"platform": "activate.parallel.works", "user": "alvaro", "system": "gcpsmall",
              "resource": "pw://alvaro/gcpsmall", "type": "cluster", "node": "compute"},
-  "outcome": {"status": "pass", "failed_at": null, "error": null, "phase": "warm", "http": null,
+  "outcome": {"status": "pass", "failed_at": null, "error": null, "phase": "warm",
               "cleanup": "ok", "run_slug": "swift-falcon", "endpoint": "webshell-swift-falcon",
               "started_at": "2026-09-21T15:09:02Z", "ended_at": "2026-09-21T15:13:09Z", "duration_s": 247}
 }
@@ -141,47 +202,31 @@ One record:
 
 | Field | Values |
 |---|---|
-| `suite_run` | Label of the suite run this execution belonged to. |
+| `suite_run` | Label of the run of the suite this execution belonged to. |
 | `workflow.commit` | Commit `ref` resolved to at launch. |
 | `target.type`, `target.node` | `cluster` or `kubernetes`; `controller` or `compute` (null on Kubernetes). |
 | `outcome.status` | `pass`, `fail`, `skip`. |
-| `outcome.failed_at` | `launch`, `run`, `endpoint`, `http`, or null. |
-| `outcome.error` | One line. The skip reason for skipped tests. Details are in the artifact directory. |
-| `outcome.phase` | `cold`, `warm`, `partial`, or null when the test has no `warm_marker`. |
-| `outcome.http` | Status code seen by `http_expect`, else null. |
+| `outcome.failed_at` | `launch`, `run`, or null. |
+| `outcome.error` | One line; the skip reason for skipped tests. Details are in `run.log` and `errors.txt`. |
+| `outcome.phase` | `cold`, `warm`, `partial`, or null without `warm_marker`. |
 | `outcome.cleanup` | `ok`, `leftover`, `unknown` (the check could not run), `kept` (`--keep`). Independent of `status`. |
 | `outcome.run_slug` | Platform handle: `pw workflows runs view <slug>`. |
-| `outcome.endpoint` | Endpoint names deleted after the verdict, comma separated; null for batch tests. |
+| `outcome.endpoint` | Endpoint names deleted after the verdict, comma separated; null when the run registered none. |
 | `outcome.duration_s` | Test start to verdict, excluding cleanup. |
 
 Every key is always present; not applicable or unknown is null. A regression is a
-`pass` followed by a `fail` for the same test id (skips in between are ignored).
+`pass` followed by a `fail` for the same test, ignoring skips in between; the dashboard
+marks it.
 
-## Dashboard
-
-The dashboard shows a summary row (tests, passing, failing, skipped, regressions, last
-suite run), the compatibility matrix of workflows by system, the table of tests with
-their recent history, and the suite runs. Filters and the selected test are kept in the
-page URL so a view can be shared. Clicking a test opens its history, the `run.log` and
-other artifacts of every execution, its definition and its full current record. The
-admin dashboard adds rerun and cancel actions. Pages use system fonts and load nothing
-from the internet.
-
-## Running locally
+The tests in `tests/` are the end-to-end tests recorded in the workflows repository,
+converted with `tools/import_workflow_tests.py`:
 
 ```bash
-pw auth                                   # once; the pw context selects platform and user
-python3 -m probe list --tests tests       # show the definitions and report invalid ones
-python3 -m probe run --tests tests --results results --dry-run
-python3 -m probe run --tests tests --results results
-python3 -m probe run --tests tests --results results --filter webshell --keep
-python3 -m probe serve --results results --tests tests --port 8080 [--admin]
+python3 tools/import_workflow_tests.py /path/to/workflows --variant general \
+    --platform activate.parallel.works --user alvaro --out tests
 ```
 
-`run` exits 0 when every test passed or was skipped, 1 when a test failed, 2 when a
-definition is invalid. `PW_PLATFORM_HOST` and `PW_USER` override the pw context, as the
-platform sets them inside a workflow run. Interrupting the runner cancels its
-platform runs and records them as failed.
+## Development
 
-See [DEVELOPER.md](DEVELOPER.md) for the code layout, the offline self-tests and the
-design decisions.
+[DEVELOPER.md](DEVELOPER.md): code layout, offline self-tests, browser check, design
+decisions.

@@ -1,0 +1,31 @@
+{
+  "name": "gcp-controller",
+  "platform": "activate.parallel.works",
+  "user": "alvaro",
+  "workflow_name": "rag-service",
+  "workflow": {
+    "repo": "github.com/parallelworks/workflows",
+    "path": "workflows/rag-service/yamls/general.yaml",
+    "ref": "canary"
+  },
+  "timeout_s": 2400,
+  "warm_marker": [
+    "${HOME}/pw/software/containers/rag-service.sif",
+    "${HOME}/pw/software/models"
+  ],
+  "leftover_patterns": [
+    "rag_server",
+    "pw endpoints run"
+  ],
+  "setup": "mkdir -p $HOME/pw/tests/rag-docs && printf '%s\\n' '# Zephyr cluster runbook' 'The zephyr scratch quota is 42 terabytes per project.' > $HOME/pw/tests/rag-docs/zephyr.md && printf '%s\\n' '# Tarragon protocol' 'The tarragon handshake requires exactly nine retries and listens on port 7777.' > $HOME/pw/tests/rag-docs/tarragon.md",
+  "inputs": {
+    "cluster": {
+      "resource": "pw://alvaro/gcpsmall",
+      "scheduler": false
+    },
+    "service": {
+      "docs_dir": "${HOME}/pw/tests/rag-docs",
+      "embedding_model_id": "BAAI/bge-small-en-v1.5"
+    }
+  }
+}

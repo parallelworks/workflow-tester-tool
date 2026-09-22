@@ -1,0 +1,61 @@
+{
+  "name": "a30-rag",
+  "platform": "activate.parallel.works",
+  "user": "alvaro",
+  "workflow_name": "rag-vllm",
+  "workflow": {
+    "repo": "github.com/parallelworks/workflows",
+    "path": "workflows/rag-vllm/yamls/general.yaml",
+    "ref": "canary"
+  },
+  "timeout_s": 2400,
+  "warm_marker": [
+    "${HOME}/pw/software/containers/vllm.sif",
+    "${HOME}/pw/software/containers/rag.sif",
+    "${HOME}/pw/models/Qwen2.5-0.5B-Instruct/config.json",
+    "${HOME}/pw/models/all-MiniLM-L6-v2/config.json"
+  ],
+  "leftover_patterns": [
+    "vllm.entrypoints",
+    "pw endpoints",
+    "rag_proxy",
+    "rag_server",
+    "indexer.py",
+    "chroma run"
+  ],
+  "leftover_commands": {
+    "singularity_instances": "singularity instance list 2>/dev/null | tail -n +2 | wc -l"
+  },
+  "inputs": {
+    "runtype": "all",
+    "cluster": {
+      "resource": "pw://alvaro/a30gpuserver",
+      "scheduler": false
+    },
+    "model": {
+      "source": "huggingface",
+      "hf_model_id": "Qwen/Qwen2.5-0.5B-Instruct",
+      "cache_dir": "~/pw/models"
+    },
+    "vllm": {
+      "num_gpus": "1",
+      "gpu_memory": "0.70",
+      "max_model_len": "4096",
+      "dtype": "float16",
+      "attention_backend": "TRITON_ATTN",
+      "extra_args": "--trust_remote_code"
+    },
+    "rag": {
+      "docsdir": "./docs",
+      "max_tokens": "2048",
+      "embedding_model_source": "huggingface",
+      "embedding_model_id": "sentence-transformers/all-MiniLM-L6-v2"
+    },
+    "service": {
+      "parent_install_dir": "${HOME}/pw/software",
+      "container_uri": "ghcr.io/parallelworks/vllm:v1.0",
+      "rag_container_uri": "ghcr.io/parallelworks/rag:v1.0",
+      "rundir": "${HOME}/pw/workflows"
+    }
+  }
+}

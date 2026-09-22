@@ -1,0 +1,31 @@
+{
+  "name": "gcp-compute",
+  "platform": "activate.parallel.works",
+  "user": "alvaro",
+  "workflow_name": "openvscode",
+  "workflow": {
+    "repo": "github.com/parallelworks/workflows",
+    "path": "workflows/openvscode/yamls/general.yaml",
+    "ref": "canary"
+  },
+  "timeout_s": 2400,
+  "warm_marker": "${HOME}/pw/software/code-server-4.105.1-linux-amd64/bin/code-server",
+  "leftover_patterns": [
+    "code-server",
+    "pw endpoints run"
+  ],
+  "inputs": {
+    "cluster": {
+      "resource": "pw://alvaro/gcpsmall",
+      "scheduler": true,
+      "slurm": {
+        "is_enabled": true,
+        "partition": "compute",
+        "time": "00:30:00"
+      }
+    },
+    "service": {
+      "directory": "${HOME}"
+    }
+  }
+}

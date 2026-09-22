@@ -11,8 +11,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,16 +19,14 @@ from typing import Dict, List, Optional, Tuple
 from . import __version__
 from .definitions import Target, TestDef, load_tests
 from .pw import Checkout, Endpoint, FetchError, Pw, PwError, one_line
-from .results import RECORDS_FILE, SCHEMA, append_record, artifact_dir_name
+from .results import SCHEMA, artifact_dir_name, write_record
 
 TERMINAL = {"completed", "error", "canceled", "failed"}
 LAUNCH_ATTEMPTS = 3
 LAUNCH_BACKOFF_S = (10, 30)
 MAX_POLL_ERRORS = 20
-ENDPOINT_LIST_ATTEMPTS = 4
 ENDPOINT_GONE_WAIT_S = 60
 LEFTOVER_WAIT_S = 120
-HTTP_ATTEMPTS = 3
 CLEANUP_RANK = {"ok": 0, "kept": 0, "unknown": 1, "leftover": 2}
 
 STOP = threading.Event()
@@ -62,6 +58,9 @@ class Options:
     dry_run: bool = False
     filters: List[str] = field(default_factory=list)
     ids: List[str] = field(default_factory=list)
+    test_files: List[str] = field(default_factory=list)
+    run_all: bool = False
+    bucket: Optional[str] = None
 
 
 class Console:
@@ -107,25 +106,6 @@ class TestLog:
                 self._fh = None
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-
-def http_status(url: str, token: Optional[str] = None, timeout: int = 20) -> int:
-    """HTTP status of a GET on url without following redirects; 0 when no answer."""
-    headers = {"Authorization": "Bearer " + token} if token else {}
-    request = urllib.request.Request(url, headers=headers)
-    opener = urllib.request.build_opener(_NoRedirect)
-    try:
-        with opener.open(request, timeout=timeout) as response:
-            return int(response.status)
-    except urllib.error.HTTPError as exc:
-        return int(exc.code)
-    except Exception:
-        return 0
-
-
 class Suite:
     """State shared by the tests of one suite run."""
 
@@ -144,6 +124,7 @@ class Suite:
         self._checkout_count = 0
         self._locks: Dict[Tuple, threading.Lock] = {}
         self.workdir = Path(tempfile.mkdtemp(prefix="probe-"))
+        self.sync_failures = 0
 
     def close(self) -> None:
         shutil.rmtree(str(self.workdir), ignore_errors=True)
@@ -215,6 +196,23 @@ class Suite:
         with self._lock:
             return self._locks.setdefault(key, threading.Lock())
 
+    def sync(self, artifact: Path, log) -> None:
+        """Upload an execution directory to the bucket, the ground truth for
+        results. Each execution has its own directory, so uploads never
+        overwrite another runner's results."""
+        if not self.opts.bucket:
+            return
+        relative = artifact.relative_to(self.opts.results_dir).as_posix()
+        destination = "%s/%s/" % (self.opts.bucket.rstrip("/"), relative)
+        r = self.pw.bucket_cp(str(artifact) + "/", destination, recursive=True)
+        if r.rc != 0:
+            with self._lock:
+                self.sync_failures += 1
+            log("bucket sync failed: %s: %s" % (destination, r.one_line()))
+            self.console("bucket sync failed for %s: %s" % (relative, r.one_line(160)))
+            return
+        log("bucket synced: %s" % destination)
+
 
 def format_errors(text: str) -> str:
     """Readable errors.txt from the JSON of pw workflows runs errors."""
@@ -248,7 +246,7 @@ class TestRun:
         self.target = test.target
         self.timeout_s = self.opts.timeout_s or test.timeout_s
         self.outcome = {
-            "status": None, "failed_at": None, "error": None, "phase": None, "http": None,
+            "status": None, "failed_at": None, "error": None, "phase": None,
             "cleanup": None, "run_slug": None, "endpoint": None,
             "started_at": iso(self.started), "ended_at": None, "duration_s": None,
         }
@@ -282,8 +280,9 @@ class TestRun:
             if state in ("inactive", "missing"):
                 self.outcome["status"] = "skip"
                 self.outcome["error"] = detail
+                self.make_artifact_dir("skip")
                 return self.finish()
-            self.make_artifact_dir()
+            self.make_artifact_dir("pending")
             try:
                 yaml_path, self.commit = self.suite.workflow_file(test)
             except FetchError as exc:
@@ -298,14 +297,16 @@ class TestRun:
                     self.rename_artifact_dir(None)
                     return self.finish()
                 self.check_phase()
+                if not self.run_setup():
+                    self.rename_artifact_dir(None)
+                    return self.finish()
                 self.snapshot_processes()
                 if not self.launch():
                     return self.finish()
                 status = self.poll()
                 self.verdict(status)
-                endpoints = self.find_endpoints()
-                self.check_http(endpoints)
                 self.set_ended()
+                endpoints = self.find_endpoints()
             self.teardown(endpoints)
             return self.finish()
         except Exception as exc:  # a bug must still leave a record behind
@@ -315,9 +316,9 @@ class TestRun:
 
     # -- artifacts ---------------------------------------------------------
 
-    def make_artifact_dir(self) -> None:
+    def make_artifact_dir(self, suffix: str) -> None:
         self.test_dir.mkdir(parents=True, exist_ok=True)
-        self.art = self.test_dir / artifact_dir_name(self.outcome["started_at"], "pending")
+        self.art = self.test_dir / artifact_dir_name(self.outcome["started_at"], suffix)
         self.art.mkdir(exist_ok=True)
         self.log.attach(self.art / "run.log")
 
@@ -354,8 +355,22 @@ class TestRun:
                                  else "cold" if present == 0 else "partial")
         self.log("phase %s (%d of %d markers present)" % (self.outcome["phase"], present, len(markers)))
 
+    def run_setup(self) -> bool:
+        """The test's setup snippet on the target, before the launch (idempotent by contract)."""
+        if not self.test.setup:
+            return True
+        if not self._login_node():
+            self.log("setup skipped: the target has no login node")
+            return True
+        r = self.pw.ssh(self.target.resource, self.test.setup, timeout=300)
+        if r.rc != 0:
+            self.fail("launch", "setup failed: %s" % (r.one_line() or "exit %d" % r.rc))
+            return False
+        self.log("setup done")
+        return True
+
     def snapshot_processes(self) -> None:
-        if not self.test.leftover_patterns or not self._login_node():
+        if not (self.test.leftover_patterns or self.test.leftover_commands) or not self._login_node():
             return
         r = self.pw.ssh(self.target.resource, "ps -u $USER -o pid=", timeout=120)
         if r.rc == 0:
@@ -449,47 +464,18 @@ class TestRun:
     # -- endpoints ---------------------------------------------------------
 
     def find_endpoints(self) -> List[Endpoint]:
+        """Endpoints the run registered: every name ending in -<slug>. A run that
+        completed has already seen its endpoint listed, so one listing is enough."""
         suffix = "-%s" % self.slug
-        expect_some = self.test.kind == "endpoint" and self.outcome["status"] == "pass"
-        attempts = ENDPOINT_LIST_ATTEMPTS if expect_some else 1
-        for attempt in range(1, attempts + 1):
-            try:
-                listed = self.pw.endpoints()
-            except PwError as exc:
-                self.log("endpoint listing failed: %s" % exc)
-                self.endpoint_list_failed = True
-                return []
-            found = [e for e in listed if e.name.endswith(suffix)]
-            if found or attempt == attempts:
-                self.log("endpoints named *%s: %s" % (suffix, ", ".join(e.name for e in found) or "none"))
-                return found
-            STOP.wait(5)
-        return []
-
-    def check_http(self, endpoints: List[Endpoint]) -> None:
-        if self.test.http_expect is None or self.outcome["status"] != "pass":
-            return
-        if not endpoints:
-            self.fail("endpoint", "run completed but no endpoint named *-%s is listed" % self.slug)
-            return
-        url = endpoints[0].url
-        if url.startswith("/"):
-            url = "https://%s%s" % (self.test.platform, url)
-        shown = url.split("?")[0]
-        token = os.environ.get("PW_API_KEY") or None
-        if not token:
-            self.log("PW_API_KEY is not set; probing %s anonymously" % shown)
-        code = 0
-        for attempt in range(1, HTTP_ATTEMPTS + 1):
-            code = http_status(url, token)
-            self.log("HTTP %s from %s (attempt %d)" % (code, shown, attempt))
-            if code in self.test.http_expect or STOP.is_set():
-                break
-            STOP.wait(5)
-        self.outcome["http"] = code or None
-        if code not in self.test.http_expect:
-            self.fail("http", "HTTP %s from %s, expected %s" % (
-                code, shown, " or ".join(str(c) for c in self.test.http_expect)))
+        try:
+            listed = self.pw.endpoints()
+        except PwError as exc:
+            self.log("endpoint listing failed: %s" % exc)
+            self.endpoint_list_failed = True
+            return []
+        found = [e for e in listed if e.name.endswith(suffix)]
+        self.log("endpoints named *%s: %s" % (suffix, ", ".join(e.name for e in found) or "none"))
+        return found
 
     def teardown(self, endpoints: List[Endpoint]) -> None:
         self.outcome["endpoint"] = ",".join(e.name for e in endpoints) or None
@@ -524,7 +510,8 @@ class TestRun:
 
     def check_leftovers(self) -> str:
         patterns = self.test.leftover_patterns
-        if not patterns or not self._login_node():
+        commands = self.test.leftover_commands
+        if not (patterns or commands) or not self._login_node():
             return "ok"
         skip = ",".join(self.preexisting)
         # Processes that predate the launch cannot be leftovers. The remote shell's
@@ -536,6 +523,9 @@ class TestRun:
         checks = ["echo p%d=$(%s | grep -c -- '[%s]%s')" % (i, ps, p[0], p[1:].replace("'", "'\\''"))
                   for i, p in enumerate(patterns)]
         names = {"p%d" % i: "process:" + p for i, p in enumerate(patterns)}
+        for i, (label, snippet) in enumerate(commands.items()):
+            checks.append("echo c%d=$(%s)" % (i, snippet))
+            names["c%d" % i] = label
         if self.target.node == "compute":
             checks.append("echo squeue=$( (command -v squeue >/dev/null && squeue -h -u $USER) 2>/dev/null | wc -l)")
             checks.append("echo qstat=$( (command -v qstat >/dev/null && qstat -u $USER) 2>/dev/null | grep -c '^[0-9]')")
@@ -570,7 +560,7 @@ class TestRun:
             "schema": SCHEMA,
             "suite_run": self.suite.suite_run,
             "pw_cli": self.suite.pw_cli,
-            "test": {"id": self.test.id, "workflow_name": self.test.workflow_name, "kind": self.test.kind},
+            "test": {"id": self.test.id, "workflow_name": self.test.workflow_name},
             "workflow": {"repo": self.test.workflow["repo"], "path": self.test.workflow["path"],
                          "ref": self.test.workflow["ref"], "commit": self.commit},
             "target": {"platform": self.test.platform, "user": self.test.user,
@@ -578,9 +568,11 @@ class TestRun:
                        "type": self.target.type, "node": self.target.node},
             "outcome": dict(self.outcome),
         }
-        self.test_dir.mkdir(parents=True, exist_ok=True)
-        append_record(self.test_dir / RECORDS_FILE, record)
+        if self.art is None:
+            self.make_artifact_dir("launch-failed")
+        write_record(self.art, record)
         self.log("record: %s" % json.dumps(record["outcome"]))
+        self.suite.sync(self.art, self.log)
         self.log.close()
         return record
 
@@ -642,9 +634,28 @@ def run_suite(opts: Options, console: Optional[Console] = None) -> int:
 
     mine = [t for t in tests if t.platform == platform and t.user == user]
     selected = mine
+    if opts.run_all and (opts.ids or opts.filters or opts.test_files):
+        console("--all cannot be combined with --test, --id or --filter")
+        return 2
+    if opts.test_files:
+        wanted = set()
+        for raw in opts.test_files:
+            candidate = Path(raw)
+            if not candidate.is_absolute():
+                inside = opts.tests_dir / raw
+                candidate = inside if inside.exists() else Path.cwd() / raw
+            if not candidate.is_file():
+                console("test file not found: %s" % raw)
+                return 2
+            wanted.add(candidate.resolve())
+        selected = [t for t in selected if t.path.resolve() in wanted]
+        for path in sorted(wanted - {t.path.resolve() for t in selected}):
+            console("cannot run %s here: invalid, or defined for another platform or user" % path)
+        if len(selected) != len(wanted):
+            return 2
     if opts.ids:
-        wanted = set(opts.ids)
-        selected = [t for t in selected if t.id in wanted]
+        wanted_ids = set(opts.ids)
+        selected = [t for t in selected if t.id in wanted_ids]
     if opts.filters:
         selected = [t for t in selected if t.matches(opts.filters)]
 
@@ -666,7 +677,7 @@ def run_suite(opts: Options, console: Optional[Console] = None) -> int:
         console("nothing to run")
         return 2 if errors else 0
 
-    console("results: %s" % opts.results_dir)
+    console("results: %s%s" % (opts.results_dir, ("  bucket: " + opts.bucket) if opts.bucket else "  (no bucket: results stay local)"))
     install_signal_handlers(console)
     records: List[dict] = []
     try:
@@ -688,6 +699,8 @@ def run_suite(opts: Options, console: Optional[Console] = None) -> int:
         outcome = record["outcome"]
         if outcome["status"] == "fail":
             console("  FAIL %s  at %s: %s" % (record["test"]["id"], outcome["failed_at"], outcome["error"]))
-    if errors:
+    if suite.sync_failures:
+        console("%d bucket sync failure(s): the bucket is missing results of this run" % suite.sync_failures)
+    if errors or suite.sync_failures:
         return 2
     return 1 if counts["fail"] else 0

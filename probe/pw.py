@@ -177,11 +177,12 @@ class Pw:
             raise PwError("pw endpoints list failed: %s" % r.one_line(), transient=is_transient(r.text))
         found = []
         for line in r.out.splitlines():
-            parts = line.split("\t") if "\t" in line else line.split()
-            if len(parts) < 2:
+            # one endpoint per line, tab-separated; other lines are notices
+            if "\t" not in line:
                 continue
+            parts = line.split("\t")
             name = parts[0].strip()
-            if not name or name.upper() == "NAME" or name.lower().startswith("no endpoints"):
+            if not name or name.upper() == "NAME":
                 continue
             found.append(Endpoint(name, parts[1].strip(), parts[2].strip() if len(parts) > 2 else ""))
         return found
@@ -191,6 +192,13 @@ class Pw:
 
     def ssh(self, resource: str, command: str, timeout: int = 120) -> Completed:
         return self._run("ssh", resource, command, timeout=timeout)
+
+    def bucket_cp(self, source: str, destination: str, recursive: bool = False) -> Completed:
+        args = ["buckets", "cp"] + (["-r"] if recursive else []) + [source, destination]
+        return self._run(*args, timeout=600)
+
+    def bucket_rm(self, prefix: str) -> Completed:
+        return self._run("buckets", "rm", "-r", "-f", prefix, timeout=600)
 
 
 def repo_url(repo: str) -> str:
@@ -241,6 +249,16 @@ class Checkout:
             raise FetchError("cannot check out %s@%s: %s" % (self.repo, self.ref, clean_error(r.text)))
         self.commit = self._git("rev-parse", "HEAD").out.strip() or None
         return self.commit
+
+    def directory(self, path: str) -> Path:
+        """Absolute path of directory `path` in the checkout, materialising it."""
+        target = self.dest / path.strip("/")
+        self._git("sparse-checkout", "add", path.strip("/"))
+        if not target.is_dir():
+            self._git("checkout", "-q", "FETCH_HEAD", "--", path.strip("/"))
+        if not target.is_dir():
+            raise FetchError("no directory %s in %s@%s" % (path, self.repo, self.ref))
+        return target.resolve()
 
     def file(self, path: str) -> Path:
         """Absolute path of `path` in the checkout, materialising it if needed."""

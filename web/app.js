@@ -23,10 +23,10 @@ const state = {
 const el = {};
 for (const id of [
   "top-meta", "run-all", "refresh", "theme", "notice", "f-platform", "f-user", "f-system", "f-workflow",
-  "f-kind", "f-status", "f-search", "f-changes", "f-clear", "t-tests", "t-pass", "t-fail", "t-skip",
+  "f-status", "f-search", "f-changes", "f-clear", "t-tests", "t-pass", "t-fail", "t-skip",
   "t-regressions", "t-last", "t-last-detail", "tile-fail", "tile-regressions", "matrix", "table-count",
   "tests-body", "suites-body", "drawer", "drawer-backdrop", "d-workflow", "d-title", "d-chips", "d-close",
-  "d-admin", "d-rerun", "d-cancel", "d-admin-msg", "d-error", "d-facts", "d-history", "d-artifact", "d-file",
+  "d-admin", "d-rerun", "d-cancel", "d-delete", "d-admin-msg", "d-error", "d-facts", "d-history", "d-artifact", "d-file",
   "d-log", "d-definition-path", "d-definition", "d-record", "foot-version", "foot-results",
 ]) el[id] = document.getElementById(id);
 
@@ -103,11 +103,23 @@ function setOptions(select, values, current, labelOf = (v) => v) {
   select.value = values.includes(previous) ? previous : "";
 }
 
-function notice(message, kind = "info") {
-  if (!message) { el.notice.hidden = true; return; }
+// One notice line. Definition errors come from the data and stay while they
+// exist; action notices (runs started, deletions, failures) fade after a while
+// and survive the periodic reload.
+let noticeTimer = null;
+function notice(message, kind = "info", source = "action") {
+  clearTimeout(noticeTimer);
+  if (!message) {
+    if (source === "definitions" && el.notice.dataset.source !== "definitions") return;
+    el.notice.hidden = true;
+    el.notice.dataset.source = "";
+    return;
+  }
   el.notice.textContent = message;
   el.notice.dataset.kind = kind;
+  el.notice.dataset.source = source;
   el.notice.hidden = false;
+  if (source === "action") noticeTimer = setTimeout(() => { if (el.notice.dataset.source === "action") el.notice.hidden = true; }, 12000);
 }
 
 // ---------------------------------------------------------------- filters (kept in the URL hash)
@@ -119,7 +131,6 @@ function readFilters() {
     user: params.get("user") || "",
     system: params.get("system") || "",
     workflow: params.get("workflow") || "",
-    kind: params.get("kind") || "",
     status: params.get("status") || "",
     search: params.get("q") || "",
     changes: params.get("changes") === "1",
@@ -130,7 +141,7 @@ function readFilters() {
 function writeFilters() {
   const f = state.filters;
   const params = new URLSearchParams();
-  for (const [key, value] of Object.entries({ platform: f.platform, user: f.user, system: f.system, workflow: f.workflow, kind: f.kind, status: f.status, q: f.search })) {
+  for (const [key, value] of Object.entries({ platform: f.platform, user: f.user, system: f.system, workflow: f.workflow, status: f.status, q: f.search })) {
     if (value) params.set(key, value);
   }
   if (f.changes) params.set("changes", "1");
@@ -144,7 +155,6 @@ function readFilterControls() {
   state.filters.user = el["f-user"].value;
   state.filters.system = el["f-system"].value;
   state.filters.workflow = el["f-workflow"].value;
-  state.filters.kind = el["f-kind"].value;
   state.filters.status = el["f-status"].value;
   state.filters.search = el["f-search"].value.trim();
   state.filters.changes = el["f-changes"].checked;
@@ -161,13 +171,12 @@ function matches(test) {
   if (f.user && test.user !== f.user) return false;
   if (f.system && systemKey(test) !== f.system) return false;
   if (f.workflow && test.workflow_name !== f.workflow) return false;
-  if (f.kind && (test.kind || "") !== f.kind) return false;
   if (f.status && status !== f.status) return false;
   if (f.changes && !test.change) return false;
   if (f.search) {
     const o = (test.current && test.current.outcome) || {};
     const w = (test.current && test.current.workflow) || {};
-    const hay = [test.id, test.system, test.node, test.kind, o.run_slug, o.error, o.endpoint, w.commit, w.ref]
+    const hay = [test.id, test.system, test.node, o.run_slug, o.error, o.endpoint, w.commit, w.ref]
       .filter(Boolean).join(" ").toLowerCase();
     if (!hay.includes(f.search.toLowerCase())) return false;
   }
@@ -182,7 +191,6 @@ function renderFilters(tests) {
   setOptions(el["f-user"], uniq(tests.map((t) => t.user)).sort(), f.user);
   setOptions(el["f-system"], uniq(tests.map(systemKey)).sort(), f.system);
   setOptions(el["f-workflow"], uniq(tests.map((t) => t.workflow_name)).sort(), f.workflow);
-  setOptions(el["f-kind"], uniq(tests.map((t) => t.kind || "")).filter(Boolean).sort(), f.kind);
   setOptions(el["f-status"], ["pass", "fail", "skip", "running", "none"].filter((s) => tests.some((t) => statusOf(t) === s)), f.status,
     (s) => STATUS[s].label);
   el["f-search"].value = f.search;
@@ -238,7 +246,7 @@ function renderMatrix(tests) {
 
 function renderTable(tests) {
   el["table-count"].textContent = `${tests.length} test${tests.length === 1 ? "" : "s"}`;
-  if (!tests.length) { el["tests-body"].innerHTML = `<tr><td colspan="9" class="empty">No tests match the filters.</td></tr>`; return; }
+  if (!tests.length) { el["tests-body"].innerHTML = `<tr><td colspan="8" class="empty">No tests match the filters.</td></tr>`; return; }
   const order = { fail: 0, running: 1, pass: 2, skip: 3, none: 4 };
   const sorted = [...tests].sort((a, b) => (order[statusOf(a)] - order[statusOf(b)]) || a.id.localeCompare(b.id));
   el["tests-body"].innerHTML = sorted.map((t) => {
@@ -250,7 +258,6 @@ function renderTable(tests) {
       <td><div><strong>${esc(t.workflow_name)}</strong> <span class="muted">/ ${esc(t.test)}</span></div><div class="muted small">${esc(t.platform)} · ${esc(t.user)}</div></td>
       <td>${esc(t.system || "–")}</td>
       <td>${esc(t.node || (t.type === "kubernetes" ? "kubernetes" : "–"))}</td>
-      <td>${esc(t.kind || "–")}</td>
       <td>${historyStrip(t.history)}</td>
       <td class="num">${fmtDuration(o.duration_s)}</td>
       <td title="${esc(o.started_at || "")}">${o.started_at ? relTime(o.started_at) : "–"}</td>
@@ -270,12 +277,12 @@ function renderMeta(data) {
   const running = data.tests.filter((t) => t.running).length;
   el["top-meta"].textContent = `Updated ${fmtDate(data.generated_at)}${running ? ` · ${running} running` : ""}${data.admin ? " · admin" : ""}`;
   el["foot-version"].textContent = `PROBE ${data.version}`;
-  el["foot-results"].textContent = data.results_dir ? `Results: ${data.results_dir}` : "";
+  el["foot-results"].textContent = data.bucket ? `Results bucket: ${data.bucket}` : (data.results_dir ? `Results: ${data.results_dir} (no bucket)` : "");
   el["run-all"].hidden = !data.admin;
   if (data.definition_errors && data.definition_errors.length) {
-    notice(`${data.definition_errors.length} invalid test definition(s): ${data.definition_errors.join("; ")}`, "warn");
+    notice(`${data.definition_errors.length} invalid test definition(s): ${data.definition_errors.join("; ")}`, "warn", "definitions");
   } else {
-    notice("");
+    notice("", "info", "definitions");
   }
 }
 
@@ -307,7 +314,7 @@ async function load() {
   } catch (error) {
     document.body.classList.add("is-stale");
     notice(`Could not load results: ${error.message}. Showing the last data received.`, "error");
-    if (!state.data) el["tests-body"].innerHTML = `<tr><td colspan="9" class="empty">No data.</td></tr>`;
+    if (!state.data) el["tests-body"].innerHTML = `<tr><td colspan="8" class="empty">No data.</td></tr>`;
   } finally {
     schedule();
   }
@@ -334,7 +341,6 @@ function fillDrawerHeader(test) {
   el["d-workflow"].textContent = `${test.platform} · ${test.user} · ${test.workflow_name}`;
   el["d-title"].textContent = test.test;
   el["d-chips"].innerHTML = chip(s) + changeChip(test.change) +
-    (test.kind ? `<span class="chip chip-plain">${esc(test.kind)}</span>` : "") +
     (o.cleanup ? `<span class="chip chip-plain${o.cleanup === "leftover" ? " chip-warn" : ""}">cleanup ${esc(o.cleanup)}</span>` : "");
   const failedAt = o.failed_at ? ` (at ${o.failed_at})` : "";
   el["d-error"].hidden = !o.error;
@@ -343,7 +349,7 @@ function fillDrawerHeader(test) {
     fact("System", test.system) + fact("Node", test.node) + fact("Type", test.type) + fact("Resource", test.resource, true) +
     fact("Workflow", test.launch_target || (w.repo ? `${w.repo}/${w.path}@${w.ref}` : null), true) +
     fact("Commit", w.commit, true) + fact("Run", o.run_slug, true) + fact("Endpoint", o.endpoint, true) +
-    fact("Phase", o.phase) + fact("HTTP", o.http) + fact("Started", o.started_at ? fmtDate(o.started_at) : null) +
+    fact("Phase", o.phase) + fact("Started", o.started_at ? fmtDate(o.started_at) : null) +
     fact("Duration", o.duration_s != null ? fmtDuration(o.duration_s) : null) + fact("Suite run", rec.suite_run, true) +
     fact("pw CLI", rec.pw_cli) + fact("Records", test.record_count) +
     (test.defined ? fact("Definition", test.definition_path, true) : `<div><dt>Definition</dt><dd class="is-bad">not in the tests directory</dd></div>`);
@@ -355,6 +361,9 @@ function fillDrawerHeader(test) {
     el["d-cancel"].dataset.slug = runningSlug || "";
     el["d-cancel"].title = runningSlug ? `Cancel run ${runningSlug}` : "No run in progress";
     el["d-rerun"].disabled = !test.defined || test.running;
+    // results of a test that no longer has a definition can be removed
+    el["d-delete"].hidden = test.defined || test.running || !test.record_count;
+    el["d-delete"].dataset.count = test.record_count || 0;
   }
   el["d-record"].textContent = test.current ? JSON.stringify(test.current, null, 2) : "No record yet.";
   renderHistory(state.records || (test.current ? null : []) || null, test);
@@ -464,6 +473,25 @@ async function post(path, body) {
   return data;
 }
 
+// Embedded in the platform's session view, window.confirm is blocked, so a
+// destructive button asks for a second click within a few seconds instead.
+function armed(button, label) {
+  if (button.dataset.armed === "1") {
+    clearTimeout(button._disarm);
+    button.dataset.armed = "";
+    button.textContent = button.dataset.label;
+    return true;
+  }
+  button.dataset.label = button.dataset.label || button.textContent;
+  button.dataset.armed = "1";
+  button.textContent = label;
+  button._disarm = setTimeout(() => {
+    button.dataset.armed = "";
+    button.textContent = button.dataset.label;
+  }, 6000);
+  return false;
+}
+
 function adminMessage(text, bad = false) {
   el["d-admin-msg"].textContent = text;
   el["d-admin-msg"].classList.toggle("is-bad", bad);
@@ -487,7 +515,7 @@ async function cancelSelected() {
   const slug = el["d-cancel"].dataset.slug;
   const test = state.data.tests.find((t) => t.id === state.selected);
   if (!slug || !test) return;
-  if (!window.confirm(`Cancel run ${slug}?`)) return;
+  if (!armed(el["d-cancel"], `Click again to cancel ${slug}`)) return;
   el["d-cancel"].disabled = true;
   adminMessage("Canceling");
   try {
@@ -500,8 +528,27 @@ async function cancelSelected() {
   }
 }
 
+async function deleteSelected() {
+  const test = state.data && state.data.tests.find((t) => t.id === state.selected);
+  if (!test || test.defined) return;
+  const count = el["d-delete"].dataset.count || test.record_count;
+  if (!armed(el["d-delete"], `Click again to delete ${count} execution(s)`)) return;
+  el["d-delete"].disabled = true;
+  adminMessage("Deleting");
+  try {
+    const data = await post("api/delete", { id: test.id });
+    notice(`Results of ${test.id} deleted (${data.executions} execution(s)).`, "info");
+    closeDrawer();
+    await load();
+  } catch (error) {
+    adminMessage(`Delete failed: ${error.message}`, true);
+  } finally {
+    el["d-delete"].disabled = false;
+  }
+}
+
 async function runAll() {
-  if (!window.confirm("Run every test defined for this platform and user?")) return;
+  if (!armed(el["run-all"], "Click again to run every test")) return;
   el["run-all"].disabled = true;
   try {
     await post("api/run", { all: true });
@@ -511,6 +558,7 @@ async function runAll() {
     notice(`Could not start the suite: ${error.message}`, "error");
   } finally {
     el["run-all"].disabled = false;
+    el["run-all"].textContent = el["run-all"].dataset.label || "Run all";
   }
 }
 
@@ -535,17 +583,31 @@ function onFilterChange() {
   renderAll();
 }
 
-for (const id of ["f-platform", "f-user", "f-system", "f-workflow", "f-kind", "f-status", "f-changes"]) {
+for (const id of ["f-platform", "f-user", "f-system", "f-workflow", "f-status", "f-changes"]) {
   el[id].addEventListener("change", onFilterChange);
 }
 let searchTimer = null;
 el["f-search"].addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(onFilterChange, 150); });
 el["f-clear"].addEventListener("click", () => {
-  state.filters = { platform: "", user: "", system: "", workflow: "", kind: "", status: "", search: "", changes: false, test: "" };
+  state.filters = { platform: "", user: "", system: "", workflow: "", status: "", search: "", changes: false, test: "" };
   writeFilters();
   renderAll();
 });
-el.refresh.addEventListener("click", () => { el.refresh.disabled = true; load().finally(() => { el.refresh.disabled = false; }); });
+el.refresh.addEventListener("click", async () => {
+  el.refresh.disabled = true;
+  if (state.data && state.data.bucket) {
+    el.refresh.textContent = "Refreshing";
+    try {
+      await post("api/refresh", {});
+      notice("");
+    } catch (error) {
+      notice(`Could not refresh from the bucket: ${error.message}`, "error");
+    }
+    el.refresh.textContent = "Refresh";
+  }
+  await load();
+  el.refresh.disabled = false;
+});
 el.theme.addEventListener("click", toggleTheme);
 el["run-all"].addEventListener("click", runAll);
 
@@ -568,6 +630,7 @@ el["d-artifact"].addEventListener("change", () => { fillFileSelect(); loadArtifa
 el["d-file"].addEventListener("change", loadArtifactFile);
 el["d-rerun"].addEventListener("click", rerunSelected);
 el["d-cancel"].addEventListener("click", cancelSelected);
+el["d-delete"].addEventListener("click", deleteSelected);
 window.addEventListener("hashchange", () => { state.filters = readFilters(); renderAll(); });
 
 load().then(() => { if (state.filters.test) openDrawer(state.filters.test); });

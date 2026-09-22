@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from probe import runner
-from probe.results import artifact_dir_name
+from probe.results import RECORD_FILE, artifact_dir_name
 from probe.runner import Console, Options
 from selftest import helpers
 from selftest.helpers import SUBMITTER, WEBSHELL, ProbeCase, definition
@@ -45,20 +45,20 @@ class RunnerTests(RunnerCase):
         self.assertEqual(outcome["cleanup"], "ok")
         self.assertTrue(outcome["endpoint"].startswith("webshell-mock-"))
         self.assertTrue(outcome["run_slug"].startswith("mock-"))
-        self.assertIsNone(outcome["http"])
         self.assertEqual(record["workflow"]["commit"], self.commit)
         self.assertEqual(record["workflow"]["repo"], helpers.REPO_URL)
         self.assertEqual(record["target"], {"platform": "activate.parallel.works", "user": "alvaro", "system": "gcpsmall",
                                             "resource": "pw://alvaro/gcpsmall", "type": "cluster", "node": "controller"})
         self.assertEqual(record["pw_cli"], "v7.99.0-mock")
         self.assertTrue(record["suite_run"].startswith("probe-"))
-        self.assertEqual(set(outcome), {"status", "failed_at", "error", "phase", "http", "cleanup", "run_slug",
+        self.assertEqual(set(outcome), {"status", "failed_at", "error", "phase", "cleanup", "run_slug",
                                         "endpoint", "started_at", "ended_at", "duration_s"})
+        self.assertEqual(record["test"], {"id": CONTROLLER, "workflow_name": "webshell"})
         # artifacts
         dirs = self.artifact_dirs(CONTROLLER)
         self.assertEqual(dirs, [artifact_dir_name(outcome["started_at"], outcome["run_slug"])])
         files = sorted(p.name for p in (self.results_dir / CONTROLLER / dirs[0]).iterdir())
-        self.assertEqual(files, ["launch.json", "run.log", "view.json"])
+        self.assertEqual(files, ["launch.json", "record.json", "run.log", "view.json"])
         log = (self.results_dir / CONTROLLER / dirs[0] / "run.log").read_text()
         self.assertIn("launch: pw workflows run --trust ", log)
         self.assertIn(WEBSHELL, log)
@@ -71,16 +71,15 @@ class RunnerTests(RunnerCase):
         self.assertIn("--name probe: " + CONTROLLER, launches[0])
         self.assertIn("PASS", out)
 
-    def test_batch_pass_has_null_endpoint_fields(self):
+    def test_run_without_endpoints_has_null_endpoint_fields(self):
         self.write_test("script_submitter/gcpsmall-controller.json",
-                        definition(kind="batch", workflow_name="script_submitter",
+                        definition(workflow_name="script_submitter",
                                    path="workflows/script_submitter/v3.6/general.yaml"))
         code, out = self.run_suite()
         self.assertEqual(code, 0, out)
         outcome = self.records("activate.parallel.works/alvaro/script_submitter/gcpsmall-controller")[0]["outcome"]
         self.assertEqual(outcome["status"], "pass")
         self.assertIsNone(outcome["endpoint"])
-        self.assertIsNone(outcome["http"])
         self.assertEqual(outcome["cleanup"], "ok")
         self.assertFalse(any(c.startswith("endpoints delete") for c in self.calls()))
 
@@ -95,7 +94,10 @@ class RunnerTests(RunnerCase):
         self.assertIn("is off", off["error"])
         self.assertIsNone(off["run_slug"])
         self.assertEqual(off["duration_s"], 0)
-        self.assertEqual(self.artifact_dirs(CONTROLLER), [])
+        self.assertEqual(self.artifact_dirs(CONTROLLER), [artifact_dir_name(off["started_at"], "skip")])
+        skip_dir = self.results_dir / CONTROLLER / self.artifact_dirs(CONTROLLER)[0]
+        self.assertEqual(sorted(p.name for p in skip_dir.iterdir()), ["record.json", "run.log"])
+        self.assertIn("resource check: inactive", (skip_dir / "run.log").read_text())
         missing = self.records("activate.parallel.works/alvaro/webshell/gcpgpu-controller")[0]["outcome"]
         self.assertEqual(missing["status"], "skip")
         self.assertIn("not listed", missing["error"])
@@ -164,32 +166,6 @@ class RunnerTests(RunnerCase):
         self.assertIn("timeout after 3s; run canceled", outcome["error"])
         self.assertTrue(any(c.startswith("--platform-host activate.parallel.works workflows runs cancel") for c in self.calls()))
 
-    def test_http_expect_pass_and_fail(self):
-        self.write_test("webshell/gcpsmall-controller.json", definition(http_expect=[200, 302]))
-        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}},
-                        "endpoint": {WEBSHELL: "webshell"}})
-        with mock.patch.object(runner, "http_status", return_value=302):
-            code, _ = self.run_suite()
-        self.assertEqual(code, 0)
-        outcome = self.records(CONTROLLER)[0]["outcome"]
-        self.assertEqual((outcome["status"], outcome["http"]), ("pass", 302))
-        with mock.patch.object(runner, "http_status", return_value=503), mock.patch.object(runner, "HTTP_ATTEMPTS", 1):
-            code, _ = self.run_suite()
-        self.assertEqual(code, 1)
-        outcome = self.records(CONTROLLER)[1]["outcome"]
-        self.assertEqual((outcome["status"], outcome["failed_at"], outcome["http"]), ("fail", "http", 503))
-        self.assertIn("expected 200 or 302", outcome["error"])
-        self.assertEqual(outcome["cleanup"], "ok")
-
-    def test_http_expect_without_endpoint_fails_at_endpoint(self):
-        self.write_test("webshell/gcpsmall-controller.json", definition(http_expect=200))
-        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}}, "endpoint": {}})
-        with mock.patch.object(runner, "ENDPOINT_LIST_ATTEMPTS", 1):
-            code, _ = self.run_suite()
-        self.assertEqual(code, 1)
-        outcome = self.records(CONTROLLER)[0]["outcome"]
-        self.assertEqual((outcome["status"], outcome["failed_at"]), ("fail", "endpoint"))
-
     def test_keep_leaves_endpoint(self):
         self.write_test("webshell/gcpsmall-controller.json", definition())
         self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}},
@@ -213,6 +189,33 @@ class RunnerTests(RunnerCase):
         self.assertEqual(outcome["status"], "pass")
         self.assertEqual(outcome["phase"], "partial")
         self.assertEqual(outcome["cleanup"], "leftover")
+
+    def test_setup_and_leftover_commands(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition(
+            setup="mkdir -p $HOME/pw/tests/seed", leftover_commands={"docker": "docker ps -q | wc -l"}))
+        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}},
+                        "endpoint": {WEBSHELL: "webshell"}, "ssh": {"echo c0=": "c0=2"}})
+        with mock.patch.object(runner, "LEFTOVER_WAIT_S", 0):
+            code, out = self.run_suite()
+        self.assertEqual(code, 0, out)
+        outcome = self.records(CONTROLLER)[0]["outcome"]
+        self.assertEqual((outcome["status"], outcome["cleanup"]), ("pass", "leftover"))
+        ssh_calls = [c for c in self.calls() if " ssh pw://alvaro/gcpsmall " in c]
+        self.assertTrue(any("mkdir -p $HOME/pw/tests/seed" in c for c in ssh_calls), ssh_calls)
+        self.assertTrue(any("docker ps -q | wc -l" in c for c in ssh_calls), ssh_calls)
+        log = (self.results_dir / CONTROLLER / self.artifact_dirs(CONTROLLER)[0] / "run.log").read_text()
+        self.assertIn("setup done", log)
+        self.assertIn("leftovers after 0s: docker", log)
+
+    def test_setup_failure_fails_at_launch(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition(setup="exit 3"))
+        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}}, "ssh_fail": True})
+        code, _ = self.run_suite()
+        self.assertEqual(code, 1)
+        outcome = self.records(CONTROLLER)[0]["outcome"]
+        self.assertEqual((outcome["status"], outcome["failed_at"]), ("fail", "launch"))
+        self.assertIn("setup failed", outcome["error"])
+        self.assertFalse(any(" run --trust " in c for c in self.calls()))
 
     def test_ssh_failure_gives_unknown_cleanup_and_null_phase(self):
         self.write_test("webshell/gcpsmall-controller.json", definition(leftover_patterns=["ttyd"], warm_marker="x"))
@@ -251,6 +254,28 @@ class RunnerTests(RunnerCase):
         self.assertEqual(code, 0)
         self.assertTrue((self.results_dir / "activate.parallel.works/alvaro/webshell/a").exists())
         self.assertFalse((self.results_dir / "activate.parallel.works/alvaro/jupyterlab/b").exists())
+
+    def test_selection_by_file_and_all(self):
+        self.write_test("a.json", definition())
+        self.write_test("sub/b.json", definition())
+        code, out = self.run_suite(test_files=["sub/b.json"])
+        self.assertEqual(code, 0, out)
+        self.assertTrue((self.results_dir / "activate.parallel.works/alvaro/webshell/b").exists())
+        self.assertFalse((self.results_dir / "activate.parallel.works/alvaro/webshell/a").exists())
+        code, out = self.run_suite(test_files=["missing.json"])
+        self.assertEqual(code, 2)
+        self.assertIn("test file not found", out)
+        other = definition()
+        other["user"] = "someone"
+        self.write_test("other.json", other)
+        code, out = self.run_suite(test_files=["other.json"])
+        self.assertEqual(code, 2)
+        self.assertIn("another platform or user", out)
+        code, out = self.run_suite(run_all=True, ids=["x/y/z/w"])
+        self.assertEqual(code, 2)
+        code, out = self.run_suite(run_all=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("2 selected of 3 defined", out)
 
     def test_definition_errors_give_exit_2_but_valid_tests_run(self):
         self.write_test("ok.json", definition())
@@ -333,6 +358,46 @@ class RunnerTests(RunnerCase):
         self.assertEqual(len(launches), 2)
         dirs = {c.split(" -i ")[1].split(" ")[1].split("/workflows/")[0] for c in launches}
         self.assertEqual(len(dirs), 1, launches)
+
+
+class BucketTests(RunnerCase):
+    BUCKET = "pw://alvaro/gcpbucket/probe/results"
+
+    def cps(self):
+        return [c.split("buckets cp ", 1)[1] for c in self.calls() if " buckets cp " in c]
+
+    def test_each_execution_directory_is_uploaded(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition())
+        self.write_test("webshell/gcpgpu-controller.json", definition(resource="pw://alvaro/gcpgpu"))
+        code, out = self.run_suite(bucket=self.BUCKET + "/")
+        self.assertEqual(code, 0, out)
+        cps = self.cps()
+        skipped = "activate.parallel.works/alvaro/webshell/gcpgpu-controller"
+        for test_id in (CONTROLLER, skipped):
+            art = self.artifact_dirs(test_id)[0]
+            self.assertIn("-r %s/%s/%s/ %s/%s/%s/" % (self.results_dir, test_id, art, self.BUCKET, test_id, art), cps)
+            self.assertTrue((self.results_dir / test_id / art / RECORD_FILE).exists())
+        self.assertEqual(len(cps), 2)
+        self.assertFalse(any(c.startswith("pw://") for c in cps), "nothing is downloaded")
+        art = self.artifact_dirs(CONTROLLER)[0]
+        log = (self.results_dir / CONTROLLER / art / "run.log").read_text()
+        self.assertIn("bucket synced: %s/%s/%s/" % (self.BUCKET, CONTROLLER, art), log)
+
+    def test_no_bucket_means_no_upload(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition())
+        code, out = self.run_suite()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.cps(), [])
+        self.assertIn("no bucket", out)
+
+    def test_sync_failure_exits_2(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition())
+        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}}, "bucket_fail": True})
+        code, out = self.run_suite(bucket=self.BUCKET)
+        self.assertEqual(code, 2)
+        self.assertIn("bucket sync failed", out)
+        self.assertIn("1 bucket sync failure(s)", out)
+        self.assertEqual(self.records(CONTROLLER)[0]["outcome"]["status"], "pass")
 
 
 class FormatTests(unittest.TestCase):

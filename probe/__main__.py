@@ -7,9 +7,11 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .definitions import load_tests
+from .definitions import load_tests, location_notes
 from .runner import Options, clean_host, run_suite
+from .pw import FetchError
 from .server import WEB_DIR, Config, serve
+from .tests_source import fetch_tests
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,6 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help="only test ids matching this glob or substring (repeatable)")
     run.add_argument("--id", action="append", default=[], metavar="TEST_ID",
                      help="only this exact test id (repeatable)")
+    run.add_argument("--test", action="append", default=[], metavar="FILE",
+                     help="only this test definition file, relative to --tests (repeatable)")
+    run.add_argument("--all", action="store_true",
+                     help="every test of this platform and user; the default when no test is selected")
+    run.add_argument("--bucket", metavar="URI", default=os.environ.get("PROBE_RESULTS_BUCKET") or None,
+                     help="bucket path (pw://<user>/<bucket>/<path>) that receives each test's "
+                          "records and artifacts as soon as it finishes (default: PROBE_RESULTS_BUCKET)")
 
     srv = sub.add_parser("serve", help="serve the dashboard")
     srv.add_argument("--results", default="results", metavar="DIR")
@@ -44,7 +53,18 @@ def build_parser() -> argparse.ArgumentParser:
     srv.add_argument("--port", type=int, default=int(os.environ.get("PORT") or 8080))
     srv.add_argument("--prefix", default=os.environ.get("PW_ENDPOINT_PATH") or os.environ.get("PW_BASE_PATH") or "",
                      help="URL prefix the dashboard is served under (default: PW_ENDPOINT_PATH)")
-    srv.add_argument("--admin", action="store_true", help="enable rerun and cancel actions")
+    srv.add_argument("--admin", action="store_true", help="enable the run and cancel actions")
+    srv.add_argument("--bucket", metavar="URI", default=os.environ.get("PROBE_RESULTS_BUCKET") or None,
+                     help="bucket path the runs started from the dashboard sync their results to")
+    srv.add_argument("--tests-repo", metavar="URL", help="git repository Refresh re-fetches the test definitions from")
+    srv.add_argument("--tests-branch", default="main", metavar="BRANCH")
+    srv.add_argument("--tests-directory", default="tests", metavar="DIR", help="directory inside that repository")
+
+    fetch = sub.add_parser("fetch-tests", help="replace a tests directory with a directory of a git repository")
+    fetch.add_argument("--repo", required=True, metavar="URL")
+    fetch.add_argument("--branch", default="main", metavar="BRANCH")
+    fetch.add_argument("--directory", default="tests", metavar="DIR", help="directory inside the repository")
+    fetch.add_argument("--out", default="tests", metavar="DIR", help="local tests directory to replace")
     srv.add_argument("--web", default=str(WEB_DIR), metavar="DIR", help=argparse.SUPPRESS)
 
     lst = sub.add_parser("list", help="list the test definitions and report invalid ones")
@@ -62,12 +82,22 @@ def main(argv=None) -> int:
             platform=args.platform, user=args.user, suite_run=args.suite_run,
             workers=args.workers, poll_s=max(1, args.poll_interval), timeout_s=args.timeout,
             keep=args.keep, dry_run=args.dry_run, filters=args.filter, ids=args.id,
+            test_files=args.test, run_all=args.all, bucket=args.bucket,
         )
         return run_suite(opts)
     if args.command == "serve":
         cfg = Config(results_dir=Path(args.results), tests_dir=Path(args.tests),
-                     web_dir=Path(args.web), prefix=args.prefix, admin=args.admin)
+                     web_dir=Path(args.web), prefix=args.prefix, admin=args.admin, bucket=args.bucket,
+                     tests_repo=args.tests_repo, tests_branch=args.tests_branch, tests_directory=args.tests_directory)
         serve(cfg, args.host, args.port)
+        return 0
+    if args.command == "fetch-tests":
+        try:
+            count = fetch_tests(args.repo, args.branch, args.directory, Path(args.out))
+        except FetchError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 1
+        print("%d test definition file(s) in %s from %s@%s (%s)" % (count, args.out, args.repo, args.branch, args.directory))
         return 0
     if args.command == "list":
         tests, errors = load_tests(Path(args.tests))
@@ -78,9 +108,11 @@ def main(argv=None) -> int:
             if args.user and test.user != args.user:
                 continue
             target = test.target
-            print("%s\n    %s  kind=%s  timeout=%ss  resource=%s  node=%s" % (
-                test.id, test.launch_target, test.kind, test.timeout_s,
+            print("%s\n    %s  timeout=%ss  resource=%s  node=%s" % (
+                test.id, test.launch_target, test.timeout_s,
                 target.resource or "-", target.node or target.type or "-"))
+        for note in location_notes(tests, Path(args.tests)):
+            print("note: %s" % note, file=sys.stderr)
         for error in errors:
             print("error: %s" % error, file=sys.stderr)
         return 2 if errors else 0

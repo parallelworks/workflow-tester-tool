@@ -1,4 +1,5 @@
-"""Test definitions: one self-contained JSON file per test."""
+"""Test definitions: one self-contained JSON file per test. The test id comes
+from the file's fields (platform, user, workflow_name, name), never from its path."""
 from __future__ import annotations
 
 import fnmatch
@@ -8,12 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-KINDS = ("batch", "endpoint")
 DEFAULT_TIMEOUT_S = 1800
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 KNOWN_KEYS = {
-    "platform", "user", "workflow_name", "workflow", "kind", "timeout_s", "inputs",
-    "http_expect", "warm_marker", "leftover_patterns",
+    "name", "platform", "user", "workflow_name", "workflow", "timeout_s", "inputs",
+    "warm_marker", "leftover_patterns", "leftover_commands", "setup",
 }
 WORKFLOW_KEYS = {"repo", "path", "ref"}
 
@@ -85,16 +85,21 @@ class TestDef:
     workflow_name: str
     name: str
     workflow: dict
-    kind: str
     timeout_s: int
     inputs: dict
-    http_expect: Optional[List[int]]
     warm_marker: List[str]
     leftover_patterns: List[str]
+    leftover_commands: dict
+    setup: Optional[str]
 
     @property
     def id(self) -> str:
         return "%s/%s/%s/%s" % (self.platform, self.user, self.workflow_name, self.name)
+
+    @property
+    def recommended_path(self) -> str:
+        """Where the file is expected to be, relative to the tests directory."""
+        return self.id + ".json"
 
     @property
     def launch_target(self) -> str:
@@ -132,9 +137,8 @@ def load_definition(path: Path) -> TestDef:
     unknown = sorted(set(data) - KNOWN_KEYS)
     if unknown:
         raise DefinitionError("unknown key(s): %s" % ", ".join(unknown))
-    if not SAFE_NAME_RE.match(path.stem):
-        raise DefinitionError("the file name may only contain letters, digits, '.', '_' and '-'")
 
+    name = _require_str(data, "name", path_like=True)
     platform = _require_str(data, "platform", path_like=True)
     user = _require_str(data, "user", path_like=True)
     workflow_name = _require_str(data, "workflow_name", path_like=True)
@@ -147,10 +151,6 @@ def load_definition(path: Path) -> TestDef:
     if "@" in workflow["repo"] and not workflow["repo"].startswith("git@"):
         raise DefinitionError("'workflow.repo' must not carry an @ref; put the ref in 'workflow.ref'")
 
-    kind = _require_str(data, "kind")
-    if kind not in KINDS:
-        raise DefinitionError("'kind' must be one of %s" % ", ".join(KINDS))
-
     timeout_s = data.get("timeout_s", DEFAULT_TIMEOUT_S)
     if isinstance(timeout_s, bool) or not isinstance(timeout_s, int) or timeout_s <= 0:
         raise DefinitionError("'timeout_s' must be a positive integer number of seconds")
@@ -158,17 +158,6 @@ def load_definition(path: Path) -> TestDef:
     inputs = data.get("inputs")
     if not isinstance(inputs, dict):
         raise DefinitionError("'inputs' must be an object (the pw workflows run -i payload)")
-
-    http_expect = data.get("http_expect")
-    if http_expect is not None:
-        if isinstance(http_expect, int) and not isinstance(http_expect, bool):
-            http_expect = [http_expect]
-        if (not isinstance(http_expect, list) or not http_expect
-                or not all(isinstance(c, int) and not isinstance(c, bool) and 100 <= c <= 599
-                           for c in http_expect)):
-            raise DefinitionError("'http_expect' must be an HTTP status code or a list of codes")
-        if kind != "endpoint":
-            raise DefinitionError("'http_expect' applies to endpoint tests only")
 
     warm_marker = data.get("warm_marker", [])
     if isinstance(warm_marker, str):
@@ -181,11 +170,22 @@ def load_definition(path: Path) -> TestDef:
             isinstance(p, str) and p.strip() for p in leftover_patterns):
         raise DefinitionError("'leftover_patterns' must be a list of process patterns")
 
+    leftover_commands = data.get("leftover_commands", {})
+    if not isinstance(leftover_commands, dict) or not all(
+            SAFE_NAME_RE.match(k) and isinstance(v, str) and v.strip() for k, v in leftover_commands.items()):
+        raise DefinitionError("'leftover_commands' must map names to shell snippets that print a count")
+
+    setup = data.get("setup")
+    if setup is not None and (not isinstance(setup, str) or not setup.strip()):
+        raise DefinitionError("'setup' must be a shell snippet")
+
     return TestDef(
-        path=path, platform=platform, user=user, workflow_name=workflow_name, name=path.stem,
-        workflow={k: workflow[k].strip() for k in WORKFLOW_KEYS}, kind=kind, timeout_s=timeout_s,
-        inputs=inputs, http_expect=http_expect, warm_marker=[m.strip() for m in warm_marker],
+        path=path, platform=platform, user=user, workflow_name=workflow_name, name=name,
+        workflow={k: workflow[k].strip() for k in WORKFLOW_KEYS}, timeout_s=timeout_s,
+        inputs=inputs, warm_marker=[m.strip() for m in warm_marker],
         leftover_patterns=[p.strip() for p in leftover_patterns],
+        leftover_commands={k: v.strip() for k, v in leftover_commands.items()},
+        setup=setup.strip() if setup else None,
     )
 
 
@@ -209,6 +209,17 @@ def load_tests(root: Path) -> Tuple[List[TestDef], List[str]]:
         errors.append("duplicate test id %s: %s" % (tid, ", ".join(_rel(t.path, root) for t in group)))
     tests = [t for t in tests if t.id not in duplicates]
     return tests, errors
+
+
+def location_notes(tests: List[TestDef], root: Path) -> List[str]:
+    """One line per test whose file is not at the recommended location
+    <platform>/<user>/<workflow_name>/<name>.json. Informational only."""
+    notes = []
+    for test in tests:
+        actual = _rel(test.path, root).replace("\\", "/")
+        if actual != test.recommended_path:
+            notes.append("%s defines %s; the recommended location is %s" % (actual, test.id, test.recommended_path))
+    return notes
 
 
 def _rel(path: Path, root: Path) -> str:

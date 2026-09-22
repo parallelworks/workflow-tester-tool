@@ -1,0 +1,107 @@
+# yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
+# PROBE: runs tests once and exits. Every test's results go to the bucket as soon
+# as it finishes; the run ends in error when a test fails.
+permissions:
+  - '*'
+jobs:
+  run:
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Checkout PROBE
+        uses: parallelworks/checkout
+        with:
+          repo: ${{ inputs.code.repo }}
+          branch: ${{ inputs.code.branch }}
+      - name: Fetch test definitions
+        run: |
+          set -eo pipefail
+          cd ${PW_PARENT_JOB_DIR}
+          DIR="${{ inputs.tests.directory }}"
+          case "${DIR}" in ''|undefined) DIR=tests ;; esac
+          python3 -m probe fetch-tests --repo "${{ inputs.tests.repo }}" --branch "${{ inputs.tests.branch }}" \
+            --directory "${DIR}" --out tests
+          python3 -m probe list --tests tests --platform "${PW_PLATFORM_HOST}" --user "${PW_USER}" \
+            || echo "::warning::Some test definitions are invalid; see above"
+      - name: Run tests
+        run: |
+          cd ${PW_PARENT_JOB_DIR}
+          export PATH=$HOME/pw:$PATH
+          BUCKET="${{ inputs.results.bucket.uri }}"
+          case "${BUCKET}" in
+            ''|undefined|pw://) echo "::error::A results bucket is required"; exit 1 ;;
+          esac
+          RESULTS="${BUCKET%/}/${{ inputs.results.path }}"
+          RESULTS="${RESULTS%/}"
+          cat > selection.txt <<'SELECTION'
+          ${{ inputs.selection }}
+          SELECTION
+          ARGS=""
+          if [ -z "$(tr -d '[:space:]' < selection.txt)" ] || grep -qx '[[:space:]]*all[[:space:]]*' selection.txt; then
+            ARGS="--all"
+          else
+            for f in $(cat selection.txt); do ARGS="${ARGS} --test ${f}"; done
+          fi
+          echo "::notice::python3 -m probe run --tests tests --results results --bucket ${RESULTS} ${ARGS}"
+          mkdir -p results
+          python3 -u -m probe run --tests tests --results results --bucket "${RESULTS}" ${ARGS}
+'on':
+  execute:
+    inputs:
+      resource:
+        type: compute-clusters
+        label: Resource
+        include-workspace: true
+        tooltip: |
+          Where PROBE runs: the user workspace or the login node of a connected
+          cluster. Tests are launched from here with the pw CLI.
+      selection:
+        type: editor
+        label: Tests to run
+        default: all
+        tooltip: |
+          all, or test definition files relative to the tests directory, one per
+          line or separated by spaces, e.g.
+          activate.parallel.works/alvaro/webshell/gcpsmall-controller.json
+      tests:
+        type: group
+        label: Test definitions
+        tooltip: Git repository, branch and directory of the test definition files.
+        items:
+          repo:
+            type: string
+            label: Repository
+            default: https://github.com/parallelworks/workflow-tester-tool.git
+          branch:
+            type: string
+            label: Branch
+            default: main
+          directory:
+            type: string
+            label: Directory
+            default: tests
+      results:
+        type: group
+        label: Results
+        tooltip: The bucket that holds the results; every test's records and artifacts are uploaded as it finishes.
+        items:
+          bucket:
+            type: bucket
+            label: Bucket
+          path:
+            type: string
+            label: Path in bucket
+            default: probe/results
+      code:
+        type: group
+        label: PROBE code
+        tooltip: Where the runner code is fetched from.
+        items:
+          repo:
+            type: string
+            label: Repository
+            default: https://github.com/parallelworks/workflow-tester-tool.git
+          branch:
+            type: string
+            label: Branch
+            default: main

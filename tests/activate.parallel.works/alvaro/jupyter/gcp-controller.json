@@ -1,0 +1,31 @@
+{
+  "name": "gcp-controller",
+  "platform": "activate.parallel.works",
+  "user": "alvaro",
+  "workflow_name": "jupyter",
+  "workflow": {
+    "repo": "github.com/parallelworks/workflows",
+    "path": "workflows/jupyter/yamls/general.yaml",
+    "ref": "canary"
+  },
+  "timeout_s": 1800,
+  "warm_marker": "${HOME}/pw/software/.miniconda3cn",
+  "leftover_patterns": [
+    "jupyter",
+    "pw endpoints run"
+  ],
+  "inputs": {
+    "cluster": {
+      "resource": "pw://alvaro/gcpsmall",
+      "scheduler": false
+    },
+    "service": {
+      "notebook_dir": "${HOME}",
+      "conda_install": true,
+      "parent_install_dir": "${HOME}/pw/software",
+      "conda_install_dir": ".miniconda3cn",
+      "conda_env": "base",
+      "install_instructions": "latest"
+    }
+  }
+}

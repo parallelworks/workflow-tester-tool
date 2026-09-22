@@ -1,13 +1,20 @@
 # yaml-language-server: $schema=https://activate.parallel.works/workflow.schema.json
-# PROBE: runs the compatibility tests defined for this platform and user, keeps
-# their results in a bucket, and serves the compatibility dashboard through pw
-# endpoints for as long as this run lives. Cancel the run to take it down.
+# PROBE dashboards. Like the session workflows in parallelworks/workflows: a start
+# script per dashboard is submitted through script_submitter, wait_for_endpoint
+# waits until the endpoint answers and touches the skip-cleanups file, the
+# submitter job is cancelled and the run completes while the dashboards keep
+# serving. Take them down with pw endpoints delete probe-<run slug> and
+# probe-admin-<run slug>. Tests are run from the admin dashboard or from
+# workflow/run-tests.yaml; the results bucket is the ground truth.
+#
+# The run's own PW_API_KEY stops working when the run completes and cannot be
+# overridden, so the dashboards run with the API key given as input: the env
+# block carries it into every step, including the script the submitter
+# launches, and each start script exports it as PW_API_KEY.
 permissions:
   - '*'
 env:
-  PW_PLATFORM_HOST: ${{ env.PW_PLATFORM_HOST }}
-  PW_USER: ${{ env.PW_USER }}
-  PW_API_KEY: ${{ env.PW_API_KEY }}
+  PROBE_API_KEY: ${{ inputs.api_key }}
 jobs:
   setup:
     ssh:
@@ -22,106 +29,210 @@ jobs:
         run: |
           set -eo pipefail
           cd ${PW_PARENT_JOB_DIR}
-          REPO="${{ inputs.tests.repo }}"
-          BRANCH="${{ inputs.tests.branch }}"
           DIR="${{ inputs.tests.directory }}"
-          DIR="${DIR#/}"; DIR="${DIR%/}"; DIR="${DIR:-tests}"
-          echo "::notice::Fetching test definitions from ${REPO}@${BRANCH} (directory ${DIR})"
-          rm -rf tests-src tests
-          export GIT_TERMINAL_PROMPT=0 GIT_LFS_SKIP_SMUDGE=1
-          git clone -q --no-checkout --depth 1 --filter=blob:none --branch "${BRANCH}" "${REPO}" tests-src
-          ( cd tests-src
-            git sparse-checkout init --no-cone
-            git sparse-checkout set "${DIR}"
-            git checkout -q )
-          if [ ! -d "tests-src/${DIR}" ]; then
-            echo "::error::Directory '${DIR}' not found in ${REPO}@${BRANCH}"
+          case "${DIR}" in ''|undefined) DIR=tests ;; esac
+          python3 -m probe fetch-tests --repo "${{ inputs.tests.repo }}" --branch "${{ inputs.tests.branch }}" \
+            --directory "${DIR}" --out tests
+          python3 -m probe list --tests tests --platform "${PW_PLATFORM_HOST}" --user "${PW_USER}" \
+            || echo "::warning::Some test definitions are invalid; see above"
+      - name: Restore results from the bucket
+        run: |
+          cd ${PW_PARENT_JOB_DIR}
+          export PATH=$HOME/pw:$PATH
+          BUCKET="${{ inputs.results.bucket.uri }}"
+          case "${BUCKET}" in
+            ''|undefined|pw://) echo "::error::A results bucket is required"; exit 1 ;;
+          esac
+          RESULTS="${BUCKET%/}/${{ inputs.results.path }}"
+          RESULTS="${RESULTS%/}"
+          mkdir -p results
+          if out=$(pw buckets cp -r "${RESULTS}/" results/ 2>&1); then
+            echo "::notice::Results restored from ${RESULTS}"
+          elif echo "${out}" | grep -q "no objects found"; then
+            echo "::notice::No results yet at ${RESULTS}"
+          else
+            echo "${out}"
+            echo "::error::Could not restore results from ${RESULTS}"
             exit 1
           fi
-          mkdir -p tests
-          cp -a "tests-src/${DIR}/." tests/
-          rm -rf tests-src
-          echo "::notice::$(find tests -name '*.json' | wc -l) test definition file(s) staged"
-          python3 -m probe list --tests tests --platform "${PW_PLATFORM_HOST}" --user "${PW_USER}" || echo "::warning::Some test definitions are invalid; see above"
-      - name: Restore results
+      - name: Create the dashboard start scripts
         run: |
+          set -e
           cd ${PW_PARENT_JOB_DIR}
-          export PATH=$HOME/pw:$PATH
           BUCKET="${{ inputs.results.bucket.uri }}"
-          BUCKET_PATH="${{ inputs.results.path }}"
-          mkdir -p results
-          case "${BUCKET}" in
-            ''|undefined|pw://) echo "::notice::No results bucket configured; results stay in ${PW_PARENT_JOB_DIR}/results for the life of this run" ;;
-            *)
-              pw buckets cp -r "${BUCKET}/${BUCKET_PATH#/}/" results/ \
-                && echo "::notice::Results restored from ${BUCKET}/${BUCKET_PATH#/}" \
-                || echo "::warning::Nothing restored from ${BUCKET}/${BUCKET_PATH#/}; starting with an empty results tree" ;;
+          RESULTS="${BUCKET%/}/${{ inputs.results.path }}"
+          RESULTS="${RESULTS%/}"
+          TESTS_REPO="${{ inputs.tests.repo }}"
+          TESTS_BRANCH="${{ inputs.tests.branch }}"
+          TESTS_DIR="${{ inputs.tests.directory }}"
+          case "${TESTS_DIR}" in ''|undefined) TESTS_DIR=tests ;; esac
+          case "${PROBE_API_KEY}" in
+            ''|undefined) echo "::error::An API key is required: the dashboards use it after this run completes"; exit 1 ;;
           esac
-  run:
-    if: ${{ inputs.run_tests }}
-    needs:
-      - setup
-    ssh:
-      remoteHost: ${{ inputs.resource.ip }}
-    steps:
-      - name: Run the suite
-        run: |
+          for kind in dashboard admin; do
+            mkdir -p ${kind}
+            if [ "${kind}" = admin ]; then
+              name="probe-admin-${PW_RUN_SLUG}"; flag="--admin"
+            else
+              name="probe-${PW_RUN_SLUG}"; flag=""
+            fi
+            # Unquoted heredoc: names, paths and the bucket are filled in now; the
+            # escaped variables are evaluated when the script runs.
+            cat > ${kind}/start.sh <<EOF
+          #!/bin/bash
+          # Serves the PROBE ${kind} dashboard as endpoint ${name} until the endpoint is deleted.
+          export PATH=\$HOME/pw:\$PATH
+          export PW_PLATFORM_HOST="${PW_PLATFORM_HOST}" PW_USER="${PW_USER}"
+          # The API key from the workflow input, carried here by the workflow's env block;
+          # the run's own PW_API_KEY stops working when the run completes.
+          export PW_API_KEY="\${PROBE_API_KEY}"
+          if [ -z "\${PW_API_KEY}" ] || [ "\${PW_API_KEY}" = undefined ]; then
+            echo "::error title=Error::No API key for ${name}"
+            exit 1
+          fi
+          echo "pw endpoints delete ${name} || true" > cancel.sh
+          chmod +x cancel.sh
           cd ${PW_PARENT_JOB_DIR}
-          export PATH=$HOME/pw:$PATH
-          BUCKET="${{ inputs.results.bucket.uri }}"
-          BUCKET_PATH="${{ inputs.results.path }}"
-          INTERVAL="${{ inputs.schedule.interval_hours }}"
-          FILTER="${{ inputs.filter }}"
-          case "${FILTER}" in ''|undefined) FILTER_ARGS="" ;; *) FILTER_ARGS="--filter ${FILTER}" ;; esac
-          case "${INTERVAL}" in ''|undefined) INTERVAL=0 ;; esac
-          sync_results() {
-            case "${BUCKET}" in
-              ''|undefined|pw://) ;;
-              *) pw buckets cp -r results/ "${BUCKET}/${BUCKET_PATH#/}/" \
-                   && echo "::notice::Results synced to ${BUCKET}/${BUCKET_PATH#/}" \
-                   || echo "::warning::Results sync to ${BUCKET}/${BUCKET_PATH#/} failed" ;;
-            esac
-          }
-          while :; do
-            echo "::group::PROBE suite $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            # Test failures are data, not workflow failures: the job stays green so
-            # the dashboard keeps serving them.
-            python3 -u -m probe run --tests tests --results results ${FILTER_ARGS} \
-              || echo "::warning::probe run exited $? (failing tests or invalid definitions); see the dashboard"
-            echo "::endgroup::"
-            sync_results
-            [ "${INTERVAL}" -gt 0 ] 2>/dev/null || break
-            echo "::notice::Next suite run in ${INTERVAL} hour(s)"
-            sleep $(( INTERVAL * 3600 ))
+          echo "::notice::Starting endpoint ${name}"
+          pw endpoints run --name ${name} -o text -- \\
+            python3 -u -m probe serve ${flag} --port {port} --prefix {path} --results results --tests tests --bucket "${RESULTS}" \\
+              --tests-repo "${TESTS_REPO}" --tests-branch "${TESTS_BRANCH}" --tests-directory "${TESTS_DIR}"
+          if [ \$? -ne 0 ]; then
+            # pw endpoints run blocks for the life of the endpoint, so it also exits
+            # non-zero when this job is cancelled after a successful start. Only a
+            # start that never registered its endpoint is a failure.
+            if pw endpoints list 2>/dev/null | awk -F'\\t' '{print \$1}' | grep -qxF "${name}"; then
+              echo "::notice::Endpoint ${name} served until this job was cancelled"
+              exit 0
+            fi
+            echo "::error title=Error::pw endpoints run failed for ${name}"
+            exit 1
+          fi
+          EOF
+            chmod +x ${kind}/start.sh
+            echo "--- ${kind}/start.sh"; cat ${kind}/start.sh
           done
-  serve:
-    if: ${{ inputs.serve_dashboard }}
+          echo "DASHBOARD_SCRIPT=${PW_PARENT_JOB_DIR}/dashboard/start.sh" | tee -a $OUTPUTS
+          echo "DASHBOARD_SKIP=${PW_PARENT_JOB_DIR}/dashboard/SKIP_CLEANUP" | tee -a $OUTPUTS
+          echo "ADMIN_SCRIPT=${PW_PARENT_JOB_DIR}/admin/start.sh" | tee -a $OUTPUTS
+          echo "ADMIN_SKIP=${PW_PARENT_JOB_DIR}/admin/SKIP_CLEANUP" | tee -a $OUTPUTS
+
+  dashboard_runner:
     needs:
       - setup
+    working-directory: ${{ env.PW_PARENT_JOB_DIR }}/dashboard
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
       - name: Serve the dashboard
+        uses: github/parallelworks/workflows@canary
+        early-cancel: any-job-failed
+        with:
+          $yaml: workflows/script_submitter/v3.6/general.yaml
+          resource: ${{ inputs.resource }}
+          shebang: '#!/bin/bash'
+          use_existing_script: true
+          script_path: ${{ needs.setup.outputs.DASHBOARD_SCRIPT }}
+          define_cleanup_script: true
+          cleanup_script_path: ./cancel.sh
+          rundir: ${{ env.PW_PARENT_JOB_DIR }}/dashboard
+          scheduler: false
+          use_scheduler_agent: false
+          submit_and_exit: false
+          skip_cleanups_file: ${{ needs.setup.outputs.DASHBOARD_SKIP }}
+          slurm:
+            is_enabled: false
+          pbs:
+            is_enabled: false
+      - name: Cancel the dashboard wait
+        uses: parallelworks/cancel-jobs
+        with:
+          jobs:
+            - dashboard_wait
+      - name: Exit with error
         run: |
-          cd ${PW_PARENT_JOB_DIR}
-          export PATH=$HOME/pw:$PATH
-          echo "::notice::Dashboard endpoint probe-${PW_RUN_SLUG}"
-          pw endpoints run --name probe-${PW_RUN_SLUG} -o text -- \
-            python3 -u -m probe serve --port {port} --prefix {path} --results results --tests tests
-  serve_admin:
-    if: ${{ inputs.serve_dashboard && inputs.admin_dashboard }}
+          echo "::error title=Error::The dashboard stopped before its endpoint came online"
+          exit 1
+
+  dashboard_wait:
     needs:
       - setup
+    working-directory: ${{ env.PW_PARENT_JOB_DIR }}/dashboard
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Wait for the dashboard endpoint
+        early-cancel: any-job-failed
+        uses: github/parallelworks/workflows@canary
+        with:
+          $yaml: workflows/wait_for_endpoint/general.yaml
+          endpoint_name: probe-${PW_RUN_SLUG}
+          host: ${{ inputs.resource.ip }}
+          skip_cleanups_file: ${{ needs.setup.outputs.DASHBOARD_SKIP }}
+      - name: Release the dashboard runner
+        uses: parallelworks/cancel-jobs
+        with:
+          jobs:
+            - dashboard_runner
+
+  admin_runner:
+    needs:
+      - setup
+    working-directory: ${{ env.PW_PARENT_JOB_DIR }}/admin
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
       - name: Serve the admin dashboard
+        uses: github/parallelworks/workflows@canary
+        early-cancel: any-job-failed
+        with:
+          $yaml: workflows/script_submitter/v3.6/general.yaml
+          resource: ${{ inputs.resource }}
+          shebang: '#!/bin/bash'
+          use_existing_script: true
+          script_path: ${{ needs.setup.outputs.ADMIN_SCRIPT }}
+          define_cleanup_script: true
+          cleanup_script_path: ./cancel.sh
+          rundir: ${{ env.PW_PARENT_JOB_DIR }}/admin
+          scheduler: false
+          use_scheduler_agent: false
+          submit_and_exit: false
+          skip_cleanups_file: ${{ needs.setup.outputs.ADMIN_SKIP }}
+          slurm:
+            is_enabled: false
+          pbs:
+            is_enabled: false
+      - name: Cancel the admin wait
+        uses: parallelworks/cancel-jobs
+        with:
+          jobs:
+            - admin_wait
+      - name: Exit with error
         run: |
-          cd ${PW_PARENT_JOB_DIR}
-          export PATH=$HOME/pw:$PATH
-          echo "::notice::Admin dashboard endpoint probe-admin-${PW_RUN_SLUG}"
-          pw endpoints run --name probe-admin-${PW_RUN_SLUG} -o text -- \
-            python3 -u -m probe serve --admin --port {port} --prefix {path} --results results --tests tests
+          echo "::error title=Error::The admin dashboard stopped before its endpoint came online"
+          exit 1
+
+  admin_wait:
+    needs:
+      - setup
+    working-directory: ${{ env.PW_PARENT_JOB_DIR }}/admin
+    ssh:
+      remoteHost: ${{ inputs.resource.ip }}
+    steps:
+      - name: Wait for the admin endpoint
+        early-cancel: any-job-failed
+        uses: github/parallelworks/workflows@canary
+        with:
+          $yaml: workflows/wait_for_endpoint/general.yaml
+          endpoint_name: probe-admin-${PW_RUN_SLUG}
+          host: ${{ inputs.resource.ip }}
+          skip_cleanups_file: ${{ needs.setup.outputs.ADMIN_SKIP }}
+      - name: Release the admin runner
+        uses: parallelworks/cancel-jobs
+        with:
+          jobs:
+            - admin_runner
+
 'on':
   execute:
     inputs:
@@ -130,19 +241,26 @@ jobs:
         label: Resource
         include-workspace: true
         tooltip: |
-          Where PROBE itself runs: the user workspace or the login node of a
-          connected cluster. It launches the tests from here with the pw CLI and
-          hosts the dashboard.
+          Where the dashboards run: the user workspace or the login node of a
+          connected cluster. Tests started from the admin dashboard are launched
+          from here with the pw CLI.
+      api_key:
+        type: password
+        label: API key
+        tooltip: |
+          A platform API key of yours (account settings, API keys). The dashboards
+          use it after this run completes: Refresh pulls the bucket with it and the
+          admin dashboard starts and cancels runs with it. It travels through the
+          workflow's environment and stays in the dashboard processes' environment.
       tests:
         type: group
         label: Test definitions
-        tooltip: Git repository, branch and directory holding the test definition files.
+        tooltip: Git repository, branch and directory of the test definition files.
         items:
           repo:
             type: string
             label: Repository
             default: https://github.com/parallelworks/workflow-tester-tool.git
-            tooltip: Git URL of the repository that holds the test definitions.
           branch:
             type: string
             label: Branch
@@ -152,63 +270,26 @@ jobs:
             label: Directory
             default: tests
             tooltip: |
-              Directory inside the repository. Every *.json file below it is a
-              test definition; only the ones whose platform and user match this
-              run are executed.
-      filter:
-        type: string
-        label: Test filter
-        optional: true
-        default: ''
-        tooltip: |
-          Optional. Only run tests whose id (<platform>/<user>/<workflow_name>/<test>)
-          contains this text or matches this glob, e.g. jupyterlab or */jean-*.
+              Every *.json file below this directory is a test definition. Only the
+              ones whose platform and user match this run can be executed.
       results:
         type: group
         label: Results
-        tooltip: Results are restored from this bucket before the suite and synced back after it.
+        tooltip: |
+          The bucket holds the results. They are restored when the run starts;
+          Refresh on the dashboard pulls them again.
         items:
           bucket:
             type: bucket
             label: Bucket
-            optional: true
-            tooltip: Leave empty to keep results only for the life of this run.
           path:
             type: string
             label: Path in bucket
             default: probe/results
-      schedule:
-        type: group
-        label: Schedule
-        items:
-          interval_hours:
-            type: number
-            label: Repeat every (hours)
-            default: 0
-            min: 0
-            tooltip: |
-              0 runs the suite once. A positive number repeats it every that many
-              hours for as long as this run lives; the dashboard stays up in between.
-      run_tests:
-        type: boolean
-        label: Run tests
-        default: true
-        tooltip: No serves the dashboard of previously stored results without running anything.
-      serve_dashboard:
-        type: boolean
-        label: Serve dashboard
-        default: true
-        tooltip: Yes registers the dashboard as endpoint probe-<run slug>. It lives until this run is canceled.
-      admin_dashboard:
-        type: boolean
-        label: Serve admin dashboard
-        default: true
-        hidden: ${{ inputs.serve_dashboard == false }}
-        tooltip: Yes also registers probe-admin-<run slug>, where tests can be rerun or their runs canceled.
       code:
         type: group
         label: PROBE code
-        tooltip: Where the PROBE runner and dashboard code is fetched from.
+        tooltip: Where the runner and dashboard code is fetched from.
         items:
           repo:
             type: string

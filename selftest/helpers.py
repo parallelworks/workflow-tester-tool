@@ -46,19 +46,50 @@ def make_workflows_repo(root):
     return "file://" + str(src), git("rev-parse", "HEAD", cwd=str(src))
 
 
-def definition(kind="endpoint", workflow_name="webshell", path="workflows/webshell/yamls/general.yaml",
-               resource="pw://alvaro/gcpsmall", scheduler=False, **extra):
+def definition(workflow_name="webshell", path="workflows/webshell/yamls/general.yaml",
+               resource="pw://alvaro/gcpsmall", scheduler=False, name=None, **extra):
+    """A valid definition. Without `name`, write_test() fills it from the file name."""
     data = {
         "platform": "activate.parallel.works",
         "user": "alvaro",
         "workflow_name": workflow_name,
         "workflow": {"repo": REPO_URL, "path": path, "ref": "canary"},
-        "kind": kind,
         "timeout_s": 60,
         "inputs": {"cluster": {"resource": resource, "scheduler": scheduler}, "service": {}},
     }
     data.update(extra)
+    if name is not None:
+        data["name"] = name
     return data
+
+
+def make_tests_repo(root, files):
+    """A git repository holding test definition files under tests/. `files` maps
+    tests/-relative paths to JSON-serialisable definitions. Returns (URL, path)."""
+    src = root / "tests-src"
+    src.mkdir()
+    for rel, data in files.items():
+        path = src / "tests" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+    git("init", "-q", str(src))
+    git("symbolic-ref", "HEAD", "refs/heads/main", cwd=str(src))
+    git("add", ".", cwd=str(src))
+    git("commit", "-q", "-m", "tests", cwd=str(src))
+    git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=str(src))
+    return "file://" + str(src), src
+
+
+def commit_tests_repo(src, files, remove=()):
+    """Add or replace files under tests/ (and remove others), then commit."""
+    for rel, data in files.items():
+        path = src / "tests" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+    for rel in remove:
+        (src / "tests" / rel).unlink()
+    git("add", "-A", ".", cwd=str(src))
+    git("commit", "-q", "-m", "update", cwd=str(src))
 
 
 class ProbeCase(unittest.TestCase):
@@ -98,12 +129,14 @@ class ProbeCase(unittest.TestCase):
     def write_test(self, relative, data):
         path = self.tests_dir / relative
         path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(data, dict) and "name" not in data:
+            data = dict(data, name=path.stem)
         path.write_text(json.dumps(data, indent=2))
         return path
 
     def records(self, test_id):
-        from probe.results import RECORDS_FILE, read_records
-        return read_records(self.results_dir / test_id / RECORDS_FILE)
+        from probe.results import test_records
+        return test_records(self.results_dir / test_id)
 
     def calls(self):
         path = self.state_dir / "calls.log"

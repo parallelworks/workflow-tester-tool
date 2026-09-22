@@ -1,18 +1,25 @@
-"""The results tree: records.jsonl per test, artifact directories per execution.
+"""The results tree: one directory per execution, holding its record and artifacts.
 
-results/<platform>/<user>/<workflow_name>/<test>/
-    records.jsonl                    one line per execution, append only
-    <start time>_<run slug>/         run.log, launch.json, view.json, errors.txt
+results/<platform>/<user>/<workflow_name>/<name>/
+    <start time>_<run slug>/        record.json, run.log, launch.json, view.json, errors.txt
+    <start time>_skip/              record.json, run.log (the test was skipped)
+    <start time>_launch-failed/     record.json, run.log (the launch produced no run)
+
+Every execution writes only its own new directory, so runners on different
+machines can write to the same bucket without overwriting each other. A
+directory without record.json is an execution still in progress.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-RECORDS_FILE = "records.jsonl"
+RECORD_FILE = "record.json"
 SCHEMA = 1
 SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 ID_RE = re.compile(r"^%s(/%s){3}$" % (SEGMENT, SEGMENT))
@@ -34,37 +41,69 @@ def id_parts(test_id: str) -> Dict[str, str]:
     return {"platform": platform, "user": user, "workflow_name": workflow_name, "test": test}
 
 
-def read_records(path: Path) -> List[dict]:
-    """Records in file order. Malformed lines are ignored."""
-    records: List[dict] = []
+def read_record(path: Path) -> Optional[dict]:
+    """The record in a record.json, or None when missing or malformed."""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return records
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if (isinstance(record, dict) and record.get("schema") == SCHEMA
-                and isinstance(record.get("test"), dict) and record["test"].get("id")
-                and isinstance(record.get("outcome"), dict)):
+        record = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return None
+    if (isinstance(record, dict) and record.get("schema") == SCHEMA
+            and isinstance(record.get("test"), dict) and record["test"].get("id")
+            and isinstance(record.get("outcome"), dict)):
+        return record
+    return None
+
+
+def write_record(directory: Path, record: dict) -> Path:
+    """Write record.json into an execution directory, atomically."""
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(directory), prefix=".record-", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, indent=1)
+        fh.write("\n")
+    target = directory / RECORD_FILE
+    os.replace(tmp, str(target))
+    return target
+
+
+def execution_dirs(test_dir: Path) -> List[Path]:
+    """Execution directories of a test, oldest first (names start with the time)."""
+    if not test_dir.is_dir():
+        return []
+    return sorted((p for p in test_dir.iterdir() if p.is_dir() and not p.name.startswith(".")),
+                  key=lambda p: p.name)
+
+
+def test_records(test_dir: Path) -> List[dict]:
+    """Records of a test in execution order. Directories without a valid record
+    are skipped."""
+    records = []
+    for directory in execution_dirs(test_dir):
+        record = read_record(directory / RECORD_FILE)
+        if record is not None:
             records.append(record)
     return records
 
 
-def append_record(path: Path, record: dict) -> None:
-    line = json.dumps(record, separators=(",", ":")) + "\n"
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(line)
+def running_executions(test_dir: Path, now: Optional[float] = None) -> List[str]:
+    """Execution directories without a record whose run.log changed recently."""
+    now = time.time() if now is None else now
+    running = []
+    for directory in execution_dirs(test_dir):
+        if (directory / RECORD_FILE).exists():
+            continue
+        try:
+            mtime = (directory / "run.log").stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime <= RUNNING_MAX_AGE_S:
+            running.append(directory.name)
+    return running
 
 
 def scan(results_dir: Path) -> Dict[str, dict]:
-    """test id -> {"dir", "records", "artifacts"} for every test directory that
-    holds records or artifact directories."""
+    """test id -> {"dir", "records", "artifacts", "running"} for every test
+    directory that holds at least one execution directory."""
     found: Dict[str, dict] = {}
     if not results_dir.is_dir():
         return found
@@ -72,10 +111,15 @@ def scan(results_dir: Path) -> Dict[str, dict]:
         test_id = "/".join(test_dir.relative_to(results_dir).parts)
         if not valid_id(test_id):
             continue
-        records = read_records(test_dir / RECORDS_FILE)
-        artifacts = sorted((p.name for p in test_dir.iterdir() if p.is_dir()), reverse=True)
-        if records or artifacts:
-            found[test_id] = {"dir": test_dir, "records": records, "artifacts": artifacts}
+        dirs = execution_dirs(test_dir)
+        if not dirs:
+            continue
+        found[test_id] = {
+            "dir": test_dir,
+            "records": test_records(test_dir),
+            "artifacts": [d.name for d in reversed(dirs)],
+            "running": running_executions(test_dir),
+        }
     return found
 
 
@@ -83,37 +127,14 @@ def _test_dirs(results_dir: Path):
     level = [results_dir]
     for _ in range(4):
         level = [child for parent in level if parent.is_dir()
-                 for child in sorted(parent.iterdir()) if child.is_dir()]
+                 for child in sorted(parent.iterdir()) if child.is_dir() and not child.name.startswith(".")]
     return level
-
-
-def running_artifacts(test_dir: Path, records: List[dict], artifacts: List[str],
-                      now: Optional[float] = None) -> List[str]:
-    """Artifact directories that no record accounts for and whose run.log was
-    written recently: executions still in progress."""
-    now = time.time() if now is None else now
-    known = set()
-    for record in records:
-        outcome = record.get("outcome") or {}
-        if outcome.get("status") != "skip" and outcome.get("started_at"):
-            known.add(artifact_dir_name(outcome["started_at"], outcome.get("run_slug")))
-    running = []
-    for name in artifacts:
-        if name in known:
-            continue
-        try:
-            mtime = (test_dir / name / "run.log").stat().st_mtime
-        except OSError:
-            continue
-        if now - mtime <= RUNNING_MAX_AGE_S:
-            running.append(name)
-    return running
 
 
 def state(test_id: str, records: List[dict], running: List[str]) -> dict:
     """Current state of one test from its records."""
     current = records[-1] if records else None
-    status = (current or {}).get("outcome", {}).get("status") if current else None
+    status = current["outcome"].get("status") if current else None
     previous_status = None
     for record in reversed(records[:-1]):
         outcome = record.get("outcome") or {}
