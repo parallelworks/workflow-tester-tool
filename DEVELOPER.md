@@ -136,6 +136,19 @@ exits before its endpoint came online fails the run. Runs started from the admin
 dashboard inherit the bucket; the `Refresh` button calls `api/refresh`, which pulls the
 bucket into the local copy. `pw endpoints delete` tears a dashboard down.
 
+**Credentials.** Every step of a run has `PW_API_KEY`, the run's token, and that token
+is rejected as soon as the run completes (verified by testing a stored run token before
+and after completion). The node's own `pw` has no user context, and secret user
+variables are not readable from a run. The dashboards outlive their run, so
+`workflow.yaml` takes an API key as a `password` input: `setup` writes it to
+`dashboard/.api_key` and `admin/.api_key` with owner-only permissions, each start
+script reads it into `PW_API_KEY` and deletes the file before anything else, and the
+setup step's cleanup removes any file a start script never consumed. The key then lives
+only in the environment of `pw endpoints run`, `probe serve` and the runners it spawns.
+Like every other input, the platform renders it into the step's script under the
+job's `logs/` directory on the resource; deleting the job directory removes that copy.
+`run-tests.yaml` needs no key: its runner works while its run is alive.
+
 `workflow/run-tests.yaml` has one job: checkout, fetch the test definitions, then
 `python3 -m probe run --bucket <bucket>/<path> --all` or `--test <file>` per line of the
 `selection` input. The step's exit code is the runner's, so a failing test ends the run

@@ -6,6 +6,11 @@
 # serving. Take them down with pw endpoints delete probe-<run slug> and
 # probe-admin-<run slug>. Tests are run from the admin dashboard or from
 # workflow/run-tests.yaml; the results bucket is the ground truth.
+#
+# The run's own PW_API_KEY stops working when the run completes, so the
+# dashboards run with the API key given as input: each start script reads it
+# from an owner-only file that it deletes at once, and keeps it in its
+# environment only.
 permissions:
   - '*'
 env:
@@ -75,8 +80,20 @@ jobs:
           BUCKET="${{ inputs.results.bucket.uri }}"
           RESULTS="${BUCKET%/}/${{ inputs.results.path }}"
           RESULTS="${RESULTS%/}"
+          umask 077
           for kind in dashboard admin; do
             mkdir -p ${kind}
+            cat > ${kind}/.api_key <<'KEY'
+          ${{ inputs.api_key }}
+          KEY
+            if [ -z "$(tr -d '[:space:]' < ${kind}/.api_key)" ] || grep -qx 'undefined' ${kind}/.api_key; then
+              echo "::error::An API key is required: the dashboards use it after this run completes"
+              rm -f dashboard/.api_key admin/.api_key
+              exit 1
+            fi
+          done
+          umask 022
+          for kind in dashboard admin; do
             if [ "${kind}" = admin ]; then
               name="probe-admin-${PW_RUN_SLUG}"; flag="--admin"
             else
@@ -89,6 +106,13 @@ jobs:
           # Serves the PROBE ${kind} dashboard as endpoint ${name} until the endpoint is deleted.
           export PATH=\$HOME/pw:\$PATH
           export PW_PLATFORM_HOST="${PW_PLATFORM_HOST}" PW_USER="${PW_USER}"
+          # The API key from the workflow input: read once into the environment, then removed
+          export PW_API_KEY="\$(cat ${PW_PARENT_JOB_DIR}/${kind}/.api_key)"
+          rm -f ${PW_PARENT_JOB_DIR}/${kind}/.api_key
+          if [ -z "\${PW_API_KEY}" ]; then
+            echo "::error title=Error::No API key for ${name}"
+            exit 1
+          fi
           echo "pw endpoints delete ${name} || true" > cancel.sh
           chmod +x cancel.sh
           cd ${PW_PARENT_JOB_DIR}
@@ -108,12 +132,14 @@ jobs:
           fi
           EOF
             chmod +x ${kind}/start.sh
-            echo "--- ${kind}/start.sh"; cat ${kind}/start.sh
+            echo "--- ${kind}/start.sh"; grep -v "cat .*api_key" ${kind}/start.sh
           done
           echo "DASHBOARD_SCRIPT=${PW_PARENT_JOB_DIR}/dashboard/start.sh" | tee -a $OUTPUTS
           echo "DASHBOARD_SKIP=${PW_PARENT_JOB_DIR}/dashboard/SKIP_CLEANUP" | tee -a $OUTPUTS
           echo "ADMIN_SCRIPT=${PW_PARENT_JOB_DIR}/admin/start.sh" | tee -a $OUTPUTS
           echo "ADMIN_SKIP=${PW_PARENT_JOB_DIR}/admin/SKIP_CLEANUP" | tee -a $OUTPUTS
+        cleanup: |
+          rm -f ${PW_PARENT_JOB_DIR}/dashboard/.api_key ${PW_PARENT_JOB_DIR}/admin/.api_key
 
   dashboard_runner:
     needs:
@@ -242,6 +268,14 @@ jobs:
           Where the dashboards run: the user workspace or the login node of a
           connected cluster. Tests started from the admin dashboard are launched
           from here with the pw CLI.
+      api_key:
+        type: password
+        label: API key
+        tooltip: |
+          A platform API key of yours (account settings, API keys). The dashboards
+          use it after this run completes: Refresh pulls the bucket with it and the
+          admin dashboard starts and cancels runs with it. It is kept in the
+          dashboard processes' environment only.
       tests:
         type: group
         label: Test definitions

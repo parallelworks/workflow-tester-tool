@@ -72,6 +72,8 @@ jobs:
 
       - name: Create inputs.json
         env:
+          KEY_PARALLEL_WORKS: ${{ secrets.ACTIVATE_PARALLEL_WORKS }}
+          KEY_HPC_MIL: ${{ secrets.ACTIVATE_HPC_MIL }}
           RESOURCE: ${{ inputs.resource }}
           BUCKET: ${{ inputs.bucket }}
           BUCKET_PATH: ${{ inputs.bucket_path }}
@@ -81,11 +83,18 @@ jobs:
           THIS_REPO: ${{ github.server_url }}/${{ github.repository }}.git
           THIS_BRANCH: ${{ github.ref_name }}
         run: |
+          # The same key the CLI authenticates with goes to the dashboards, which
+          # outlive the platform run.
+          case "${PW_PLATFORM_HOST}" in
+            activate.hpc.mil) export API_KEY="${KEY_HPC_MIL}" ;;
+            *) export API_KEY="${KEY_PARALLEL_WORKS}" ;;
+          esac
           python3 - <<'EOF'
           import json, os
           env = os.environ
           inputs = {
               "resource": env["RESOURCE"],
+              "api_key": env["API_KEY"],
               "tests": {"repo": env["TESTS_REPO"] or env["THIS_REPO"],
                         "branch": env["TESTS_BRANCH"] or env["THIS_BRANCH"],
                         "directory": env["TESTS_DIRECTORY"] or "tests"},
@@ -93,7 +102,7 @@ jobs:
               "code": {"repo": env["THIS_REPO"], "branch": env["THIS_BRANCH"]},
           }
           json.dump(inputs, open("inputs.json", "w"), indent=2)
-          print(json.dumps(inputs, indent=2))
+          print(json.dumps(dict(inputs, api_key="<redacted>"), indent=2))
           EOF
 
       - name: Start the dashboards
@@ -101,5 +110,6 @@ jobs:
           pw workflows run --trust -o json \
             --name "PROBE dashboard (${{ github.ref_name }})" \
             -i inputs.json "$GITHUB_WORKSPACE/workflow/workflow.yaml" | tee run.json
+          rm -f inputs.json
           SLUG=$(python3 -c "import json; raw=open('run.json').read(); print(json.JSONDecoder().raw_decode(raw[raw.index('{'):])[0]['run']['slug'])")
           echo "::notice::Dashboards: endpoints probe-${SLUG} and probe-admin-${SLUG} (pw endpoints list). Take them down with: pw endpoints delete probe-${SLUG}; pw endpoints delete probe-admin-${SLUG}"

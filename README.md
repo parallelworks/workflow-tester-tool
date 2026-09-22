@@ -29,7 +29,7 @@ up as a regression.
 | Dashboard | `python3 -m probe serve`: the compatibility matrix, per-test history and logs. `Refresh` pulls the latest results from the bucket. The admin dashboard can also start tests and cancel runs. |
 | `workflow/workflow.yaml` | Platform workflow that starts the two dashboards as `pw` endpoints `probe-<run slug>` (read-only) and `probe-admin-<run slug>`. Like the session workflows, the run completes once both endpoints answer and the dashboards keep serving until their endpoints are deleted. Runs no tests. |
 | `workflow/run-tests.yaml` | Platform workflow that runs all tests, or the listed test files, once and exits. Ends in error when a test fails. |
-| `.github/workflows/dashboard.yml` | GitHub action, manual: deploys `workflow.yaml` on the platform. |
+| `.github/workflows/dashboard.yml` | GitHub action, manual: deploys `workflow.yaml` on the platform, passing the platform's repository secret as the dashboards' API key. |
 | `.github/workflows/run-tests.yml` | GitHub action, manual or nightly (06:00 UTC): deploys `run-tests.yaml`, waits, and fails when a test fails. |
 
 The code is the `probe/` package (Python 3.8+, standard library only) and `web/`.
@@ -43,6 +43,7 @@ dashboard**, or by hand with `pw workflows run --trust -i inputs.json
 | Input | Meaning |
 |---|---|
 | Resource | Where the dashboards run and where tests started from the admin dashboard are launched: the user workspace or a cluster login node with the `pw` CLI, `python3` and `git`. |
+| API key | A platform API key of yours (account settings, API keys). A run's own credential stops working when the run completes, and the dashboards outlive the run, so they call the platform with this key: Refresh pulls the bucket with it and the admin dashboard starts and cancels runs with it. It is kept only in the dashboard processes' environment. In the GitHub action it is the repository secret for the platform. |
 | Test definitions | Repository, branch and directory of the test files. |
 | Results | Bucket and path of the results. Restored when the run starts; `Refresh` pulls them again. |
 | PROBE code | Repository and branch of this code. |
