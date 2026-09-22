@@ -27,7 +27,7 @@ up as a regression.
 | Results bucket | The ground truth. `<bucket>/<path>/<platform>/<user>/<workflow_name>/<name>/` holds one directory per execution with its `record.json` and artifacts. Every runner uploads an execution's directory as soon as the test finishes; nothing is ever overwritten. |
 | Runner | `python3 -m probe run`: checks the target is on, launches the workflow, waits for the verdict, cleans up, appends the record and uploads it. |
 | Dashboard | `python3 -m probe serve`: the compatibility matrix, per-test history and logs. `Refresh` pulls the latest results from the bucket. The admin dashboard can also start tests and cancel runs. |
-| `workflow/workflow.yaml` | Platform workflow that serves the two dashboards as `pw` endpoints `probe-<run slug>` (read-only) and `probe-admin-<run slug>`. Lives until the run is canceled. Runs no tests. |
+| `workflow/workflow.yaml` | Platform workflow that starts the two dashboards as `pw` endpoints `probe-<run slug>` (read-only) and `probe-admin-<run slug>`. Like the session workflows, the run completes once both endpoints answer and the dashboards keep serving until their endpoints are deleted. Runs no tests. |
 | `workflow/run-tests.yaml` | Platform workflow that runs all tests, or the listed test files, once and exits. Ends in error when a test fails. |
 | `.github/workflows/dashboard.yml` | GitHub action, manual: deploys `workflow.yaml` on the platform. |
 | `.github/workflows/run-tests.yml` | GitHub action, manual or nightly (06:00 UTC): deploys `run-tests.yaml`, waits, and fails when a test fails. |
@@ -47,7 +47,9 @@ dashboard**, or by hand with `pw workflows run --trust -i inputs.json
 | Results | Bucket and path of the results. Restored when the run starts; `Refresh` pulls them again. |
 | PROBE code | Repository and branch of this code. |
 
-`pw endpoints list` shows the two URLs. Cancel the run to take the dashboards down.
+The run completes as soon as both endpoints answer; `pw endpoints list` shows their
+URLs. The dashboards keep running on the resource until you delete them:
+`pw endpoints delete probe-<run slug>` and `pw endpoints delete probe-admin-<run slug>`.
 
 ## Run tests
 

@@ -1,8 +1,9 @@
 name: Start PROBE dashboard
 
 # Deploys workflow/workflow.yaml on the platform: the read-only and admin
-# dashboards for the results in the bucket. The platform run stays alive until
-# it is canceled. Nothing runs tests here.
+# dashboards for the results in the bucket. The platform run completes once the
+# endpoints answer; the dashboards live until their endpoints are deleted.
+# Nothing runs tests here.
 on:
   workflow_dispatch:
     inputs:
@@ -101,4 +102,4 @@ jobs:
             --name "PROBE dashboard (${{ github.ref_name }})" \
             -i inputs.json "$GITHUB_WORKSPACE/workflow/workflow.yaml" | tee run.json
           SLUG=$(python3 -c "import json; print(json.load(open('run.json'))['run']['slug'])")
-          echo "::notice::Dashboards: endpoints probe-${SLUG} and probe-admin-${SLUG} (pw endpoints list). Cancel with: pw workflows runs cancel ${SLUG}"
+          echo "::notice::Dashboards: endpoints probe-${SLUG} and probe-admin-${SLUG} (pw endpoints list). Take them down with: pw endpoints delete probe-${SLUG}; pw endpoints delete probe-admin-${SLUG}"

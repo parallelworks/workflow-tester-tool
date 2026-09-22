@@ -112,13 +112,19 @@ passes `{path}`), `PW_ENDPOINT_PATH` or `X-Forwarded-Prefix`.
 
 ## The workflows
 
-`workflow/workflow.yaml` has three jobs on the chosen resource. `setup` checks out this
-repository and the test definitions and restores the results from the bucket (a bucket
-path with no objects yet is fine; any other failure stops the run). `dashboard` and
-`admin_dashboard` each run `pw endpoints run --name probe[-admin]-${PW_RUN_SLUG} --
-python3 -m probe serve ... --bucket <bucket>/<path>`, which lives for the rest of the
-run. Runs started from the admin dashboard inherit the bucket. The `Refresh` button
-calls `api/refresh`, which pulls the bucket into the local copy.
+`workflow/workflow.yaml` follows the endpoint pattern of the session workflows in
+`parallelworks/workflows`. `setup` checks out this repository and the test definitions,
+restores the results from the bucket (a bucket path with no objects yet is fine; any
+other failure stops the run) and writes one start script per dashboard into
+`dashboard/` and `admin/`; each script runs `pw endpoints run --name
+probe[-admin]-${PW_RUN_SLUG} -- python3 -m probe serve ... --bucket <bucket>/<path>`.
+For each dashboard a runner job submits the script through the `script_submitter`
+subworkflow and a wait job calls the `wait_for_endpoint` subworkflow, which waits until
+the endpoint is listed and its URL answers, touches the skip-cleanups file and cancels
+the runner job. The run then completes while the servers keep running; a runner that
+exits before its endpoint came online fails the run. Runs started from the admin
+dashboard inherit the bucket; the `Refresh` button calls `api/refresh`, which pulls the
+bucket into the local copy. `pw endpoints delete` tears a dashboard down.
 
 `workflow/run-tests.yaml` has one job: checkout, fetch the test definitions, then
 `python3 -m probe run --bucket <bucket>/<path> --all` or `--test <file>` per line of the
