@@ -89,10 +89,22 @@ fields, not from the file's location; `<platform>/<user>/<workflow_name>/<name>.
 the recommended place and `python3 -m probe list` notes files found elsewhere. Two files
 with the same id, or an unknown key, are errors.
 
-To change a test, edit its file, push, and press `Refresh` on the dashboard (the next
-`run-tests.yaml` run fetches the repository anyway). To remove one, delete its file,
-push, press `Refresh`, and then `Delete results` on the admin dashboard to drop its
-history from the bucket; until then it shows as a test without a definition.
+### Edit or remove a test
+
+Tests are files in the tests repository, so both are git changes:
+
+1. **Edit**: change the JSON file (inputs, `timeout_s`, ...), run
+   `python3 -m probe list --tests tests` to check it, commit and push.
+2. **Remove**: delete the JSON file, commit and push.
+3. Press `Refresh` on the dashboard. It re-fetches the definitions, so the change
+   shows at once. A run of `run-tests.yaml` fetches them anyway.
+4. After a removal the test's history is still in the bucket, so the dashboard keeps
+   showing it as a test without a definition. Open it on the admin dashboard and press
+   `Delete results` to drop that history too (or `pw buckets rm -r <bucket>/<path>/<id>/`).
+
+Renaming a test (a new `name`) is a removal plus an addition: the history stays under
+the old id until you delete it. Tests that came from the workflows repository are
+re-created by the next import, so remove or change them there as well.
 
 ```json
 {
