@@ -65,7 +65,9 @@ Node 22 or newer. Destructive buttons ask for a second click instead of
    (then `pw workflows runs cancel`) or an interrupt.
 6. Verdict: `completed` passes; anything else fails at `run` with the first error
    annotation of `pw workflows runs errors`. The workflow, not PROBE, checks that its
-   service is healthy before it completes.
+   service is healthy before it completes. This is why only workflows that run to
+   completion are supported and the older session pattern (a `sessions:` block, a run
+   that stays alive) is not.
 7. Teardown: every endpoint named `*-<slug>` is deleted and waited for, then the
    `leftover_patterns` and `leftover_commands` checks run over `pw ssh`, retried for two
    minutes. A run that registered no endpoint has nothing to delete; every test is

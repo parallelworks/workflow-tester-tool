@@ -156,7 +156,10 @@ What happens to a test:
 ```
 
 The workflow itself is responsible for failing its run when its service is not healthy
-and completing once it is; PROBE trusts the run status. The target system comes from
+and completing once it is; PROBE trusts the run status. Only workflows that run to
+completion can be tested. Workflows built on the older session pattern, whose YAML has
+a `sessions:` block and whose run stays alive to serve the session, are not supported:
+their run never completes, so a test of one would only time out. The target system comes from
 `inputs.resource` or `inputs.cluster.resource` (a name, a `pw://user/name` URI or a
 resource object); `scheduler: true` marks a compute-node test.
 
