@@ -140,11 +140,12 @@ bucket into the local copy. `pw endpoints delete` tears a dashboard down.
 is rejected as soon as the run completes (verified by testing a stored run token before
 and after completion). The node's own `pw` has no user context, and secret user
 variables are not readable from a run. The dashboards outlive their run, so
-`workflow.yaml` takes an API key as a `password` input: `setup` writes it to
-`dashboard/.api_key` and `admin/.api_key` with owner-only permissions, each start
-script reads it into `PW_API_KEY` and deletes the file before anything else, and the
-setup step's cleanup removes any file a start script never consumed. The key then lives
-only in the environment of `pw endpoints run`, `probe serve` and the runners it spawns.
+`workflow.yaml` takes an API key as a `password` input and carries it in its top-level
+`env` block as `PROBE_API_KEY`, which reaches every step, including the script that
+`script_submitter` launches (`PW_API_KEY` itself cannot be overridden: the platform
+injects the run's token). Each start script exports it as `PW_API_KEY`, so the key lives
+in the environment of `pw endpoints run`, `probe serve` and the runners it spawns, and
+nowhere on disk.
 Like every other input, the platform keeps it in the run's record (`pw workflows runs
 view -o json` shows it in `inputs`, in plain text as of September 2026) and renders it
 into the step's script under the job's `logs/` directory on the resource; deleting the

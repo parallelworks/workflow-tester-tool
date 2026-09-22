@@ -7,16 +7,14 @@
 # probe-admin-<run slug>. Tests are run from the admin dashboard or from
 # workflow/run-tests.yaml; the results bucket is the ground truth.
 #
-# The run's own PW_API_KEY stops working when the run completes, so the
-# dashboards run with the API key given as input: each start script reads it
-# from an owner-only file that it deletes at once, and keeps it in its
-# environment only.
+# The run's own PW_API_KEY stops working when the run completes and cannot be
+# overridden, so the dashboards run with the API key given as input: the env
+# block carries it into every step, including the script the submitter
+# launches, and each start script exports it as PW_API_KEY.
 permissions:
   - '*'
 env:
-  PW_PLATFORM_HOST: ${{ env.PW_PLATFORM_HOST }}
-  PW_USER: ${{ env.PW_USER }}
-  PW_API_KEY: ${{ env.PW_API_KEY }}
+  PROBE_API_KEY: ${{ inputs.api_key }}
 jobs:
   setup:
     ssh:
@@ -80,20 +78,11 @@ jobs:
           BUCKET="${{ inputs.results.bucket.uri }}"
           RESULTS="${BUCKET%/}/${{ inputs.results.path }}"
           RESULTS="${RESULTS%/}"
-          umask 077
+          case "${PROBE_API_KEY}" in
+            ''|undefined) echo "::error::An API key is required: the dashboards use it after this run completes"; exit 1 ;;
+          esac
           for kind in dashboard admin; do
             mkdir -p ${kind}
-            cat > ${kind}/.api_key <<'KEY'
-          ${{ inputs.api_key }}
-          KEY
-            if [ -z "$(tr -d '[:space:]' < ${kind}/.api_key)" ] || grep -qx 'undefined' ${kind}/.api_key; then
-              echo "::error::An API key is required: the dashboards use it after this run completes"
-              rm -f dashboard/.api_key admin/.api_key
-              exit 1
-            fi
-          done
-          umask 022
-          for kind in dashboard admin; do
             if [ "${kind}" = admin ]; then
               name="probe-admin-${PW_RUN_SLUG}"; flag="--admin"
             else
@@ -106,10 +95,10 @@ jobs:
           # Serves the PROBE ${kind} dashboard as endpoint ${name} until the endpoint is deleted.
           export PATH=\$HOME/pw:\$PATH
           export PW_PLATFORM_HOST="${PW_PLATFORM_HOST}" PW_USER="${PW_USER}"
-          # The API key from the workflow input: read once into the environment, then removed
-          export PW_API_KEY="\$(cat ${PW_PARENT_JOB_DIR}/${kind}/.api_key)"
-          rm -f ${PW_PARENT_JOB_DIR}/${kind}/.api_key
-          if [ -z "\${PW_API_KEY}" ]; then
+          # The API key from the workflow input, carried here by the workflow's env block;
+          # the run's own PW_API_KEY stops working when the run completes.
+          export PW_API_KEY="\${PROBE_API_KEY}"
+          if [ -z "\${PW_API_KEY}" ] || [ "\${PW_API_KEY}" = undefined ]; then
             echo "::error title=Error::No API key for ${name}"
             exit 1
           fi
@@ -132,7 +121,7 @@ jobs:
           fi
           EOF
             chmod +x ${kind}/start.sh
-            echo "--- ${kind}/start.sh"; grep -v "cat .*api_key" ${kind}/start.sh
+            echo "--- ${kind}/start.sh"; cat ${kind}/start.sh
           done
           echo "DASHBOARD_SCRIPT=${PW_PARENT_JOB_DIR}/dashboard/start.sh" | tee -a $OUTPUTS
           echo "DASHBOARD_SKIP=${PW_PARENT_JOB_DIR}/dashboard/SKIP_CLEANUP" | tee -a $OUTPUTS
@@ -146,13 +135,6 @@ jobs:
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
-      - name: Check the API key file
-        run: |
-          # The start script deletes this file as soon as it has read it; the cleanup
-          # below only matters when this job ends before the script ran.
-          test -f .api_key && echo "API key file ready" || { echo "::error::API key file missing"; exit 1; }
-        cleanup: |
-          rm -f .api_key
       - name: Serve the dashboard
         uses: github/parallelworks/workflows@canary
         early-cancel: any-job-failed
@@ -211,13 +193,6 @@ jobs:
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
-      - name: Check the API key file
-        run: |
-          # The start script deletes this file as soon as it has read it; the cleanup
-          # below only matters when this job ends before the script ran.
-          test -f .api_key && echo "API key file ready" || { echo "::error::API key file missing"; exit 1; }
-        cleanup: |
-          rm -f .api_key
       - name: Serve the admin dashboard
         uses: github/parallelworks/workflows@canary
         early-cancel: any-job-failed
@@ -286,8 +261,8 @@ jobs:
         tooltip: |
           A platform API key of yours (account settings, API keys). The dashboards
           use it after this run completes: Refresh pulls the bucket with it and the
-          admin dashboard starts and cancels runs with it. It is kept in the
-          dashboard processes' environment only.
+          admin dashboard starts and cancels runs with it. It travels through the
+          workflow's environment and stays in the dashboard processes' environment.
       tests:
         type: group
         label: Test definitions

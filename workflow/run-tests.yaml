@@ -3,10 +3,6 @@
 # as it finishes; the run ends in error when a test fails.
 permissions:
   - '*'
-env:
-  PW_PLATFORM_HOST: ${{ env.PW_PLATFORM_HOST }}
-  PW_USER: ${{ env.PW_USER }}
-  PW_API_KEY: ${{ env.PW_API_KEY }}
 jobs:
   run:
     ssh:

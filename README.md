@@ -43,7 +43,7 @@ dashboard**, or by hand with `pw workflows run --trust -i inputs.json
 | Input | Meaning |
 |---|---|
 | Resource | Where the dashboards run and where tests started from the admin dashboard are launched: the user workspace or a cluster login node with the `pw` CLI, `python3` and `git`. |
-| API key | A platform API key of yours (account settings, API keys). A run's own credential stops working when the run completes, and the dashboards outlive the run, so they call the platform with this key: Refresh pulls the bucket with it and the admin dashboard starts and cancels runs with it. It is kept only in the dashboard processes' environment. In the GitHub action it is the repository secret for the platform. |
+| API key | A platform API key of yours (account settings, API keys). A run's own credential stops working when the run completes, and the dashboards outlive the run, so they call the platform with this key: Refresh pulls the bucket with it and the admin dashboard starts and cancels runs with it. It travels through the workflow's environment and stays in the dashboard processes' environment. In the GitHub action it is the repository secret for the platform. |
 | Test definitions | Repository, branch and directory of the test files. |
 | Results | Bucket and path of the results. Restored when the run starts; `Refresh` pulls them again. |
 | PROBE code | Repository and branch of this code. |
