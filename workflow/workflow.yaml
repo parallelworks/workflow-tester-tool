@@ -138,8 +138,6 @@ jobs:
           echo "DASHBOARD_SKIP=${PW_PARENT_JOB_DIR}/dashboard/SKIP_CLEANUP" | tee -a $OUTPUTS
           echo "ADMIN_SCRIPT=${PW_PARENT_JOB_DIR}/admin/start.sh" | tee -a $OUTPUTS
           echo "ADMIN_SKIP=${PW_PARENT_JOB_DIR}/admin/SKIP_CLEANUP" | tee -a $OUTPUTS
-        cleanup: |
-          rm -f ${PW_PARENT_JOB_DIR}/dashboard/.api_key ${PW_PARENT_JOB_DIR}/admin/.api_key
 
   dashboard_runner:
     needs:
@@ -148,6 +146,13 @@ jobs:
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
+      - name: Check the API key file
+        run: |
+          # The start script deletes this file as soon as it has read it; the cleanup
+          # below only matters when this job ends before the script ran.
+          test -f .api_key && echo "API key file ready" || { echo "::error::API key file missing"; exit 1; }
+        cleanup: |
+          rm -f .api_key
       - name: Serve the dashboard
         uses: github/parallelworks/workflows@canary
         early-cancel: any-job-failed
@@ -206,6 +211,13 @@ jobs:
     ssh:
       remoteHost: ${{ inputs.resource.ip }}
     steps:
+      - name: Check the API key file
+        run: |
+          # The start script deletes this file as soon as it has read it; the cleanup
+          # below only matters when this job ends before the script ran.
+          test -f .api_key && echo "API key file ready" || { echo "::error::API key file missing"; exit 1; }
+        cleanup: |
+          rm -f .api_key
       - name: Serve the admin dashboard
         uses: github/parallelworks/workflows@canary
         early-cancel: any-job-failed
