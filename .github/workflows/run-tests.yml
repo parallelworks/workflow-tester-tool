@@ -116,7 +116,7 @@ jobs:
           pw workflows run --trust -o json \
             --name "PROBE tests (${{ github.ref_name }}, ${{ github.event_name }})" \
             -i inputs.json "$GITHUB_WORKSPACE/workflow/run-tests.yaml" | tee run.json
-          SLUG=$(python3 -c "import json; print(json.load(open('run.json'))['run']['slug'])")
+          SLUG=$(python3 -c "import json; raw=open('run.json').read(); print(json.JSONDecoder().raw_decode(raw[raw.index('{'):])[0]['run']['slug'])")
           echo "::notice::Platform run ${SLUG}: pw workflows runs view ${SLUG}"
           if [ "${WAIT}" != "true" ]; then
             exit 0
@@ -125,7 +125,7 @@ jobs:
             STATUS=$(pw workflows runs view -o json "${SLUG}" 2>/dev/null | python3 -c "import json,sys
 raw = sys.stdin.read()
 try:
-    print(json.loads(raw[raw.index('{'):]).get('status', ''))
+    print(json.JSONDecoder().raw_decode(raw[raw.index('{'):])[0].get('status', ''))
 except Exception:
     print('')")
             case "${STATUS}" in

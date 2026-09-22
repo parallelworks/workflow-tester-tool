@@ -177,11 +177,12 @@ class Pw:
             raise PwError("pw endpoints list failed: %s" % r.one_line(), transient=is_transient(r.text))
         found = []
         for line in r.out.splitlines():
-            parts = line.split("\t") if "\t" in line else line.split()
-            if len(parts) < 2:
+            # one endpoint per line, tab-separated; other lines are notices
+            if "\t" not in line:
                 continue
+            parts = line.split("\t")
             name = parts[0].strip()
-            if not name or name.upper() == "NAME" or name.lower().startswith("no endpoints"):
+            if not name or name.upper() == "NAME":
                 continue
             found.append(Endpoint(name, parts[1].strip(), parts[2].strip() if len(parts) > 2 else ""))
         return found

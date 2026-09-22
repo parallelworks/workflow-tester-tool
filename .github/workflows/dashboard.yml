@@ -101,5 +101,5 @@ jobs:
           pw workflows run --trust -o json \
             --name "PROBE dashboard (${{ github.ref_name }})" \
             -i inputs.json "$GITHUB_WORKSPACE/workflow/workflow.yaml" | tee run.json
-          SLUG=$(python3 -c "import json; print(json.load(open('run.json'))['run']['slug'])")
+          SLUG=$(python3 -c "import json; raw=open('run.json').read(); print(json.JSONDecoder().raw_decode(raw[raw.index('{'):])[0]['run']['slug'])")
           echo "::notice::Dashboards: endpoints probe-${SLUG} and probe-admin-${SLUG} (pw endpoints list). Take them down with: pw endpoints delete probe-${SLUG}; pw endpoints delete probe-admin-${SLUG}"

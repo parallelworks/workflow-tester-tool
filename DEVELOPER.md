@@ -34,6 +34,16 @@ derivation, every verdict path (pass, skip, launch failure, run error, timeout,
 results reader (regressions, running detection, malformed lines) and the server API
 including path safety and the read-only refusal of admin actions. About a minute.
 
+### Browser check
+
+`bash selftest/ui_check.sh` starts a local admin dashboard on the mock CLI with a
+seeded results tree and drives every control in headless Chrome over the DevTools
+protocol (`selftest/ui_check.js`): filters, search, theme, matrix chips, the drawer and
+its tabs, artifact files, Refresh (bucket pull), Rerun test, Cancel run, Run all with
+its second-click confirmation, and the refusal of an overlapping run. Needs Chrome and
+Node 22 or newer. Destructive buttons ask for a second click instead of
+`window.confirm`, which the platform blocks inside its session frame.
+
 ## One test execution
 
 `runner.TestRun.execute`, in order:

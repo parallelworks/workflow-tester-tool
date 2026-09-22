@@ -458,6 +458,25 @@ async function post(path, body) {
   return data;
 }
 
+// Embedded in the platform's session view, window.confirm is blocked, so a
+// destructive button asks for a second click within a few seconds instead.
+function armed(button, label) {
+  if (button.dataset.armed === "1") {
+    clearTimeout(button._disarm);
+    button.dataset.armed = "";
+    button.textContent = button.dataset.label;
+    return true;
+  }
+  button.dataset.label = button.dataset.label || button.textContent;
+  button.dataset.armed = "1";
+  button.textContent = label;
+  button._disarm = setTimeout(() => {
+    button.dataset.armed = "";
+    button.textContent = button.dataset.label;
+  }, 6000);
+  return false;
+}
+
 function adminMessage(text, bad = false) {
   el["d-admin-msg"].textContent = text;
   el["d-admin-msg"].classList.toggle("is-bad", bad);
@@ -481,7 +500,7 @@ async function cancelSelected() {
   const slug = el["d-cancel"].dataset.slug;
   const test = state.data.tests.find((t) => t.id === state.selected);
   if (!slug || !test) return;
-  if (!window.confirm(`Cancel run ${slug}?`)) return;
+  if (!armed(el["d-cancel"], `Click again to cancel ${slug}`)) return;
   el["d-cancel"].disabled = true;
   adminMessage("Canceling");
   try {
@@ -495,7 +514,7 @@ async function cancelSelected() {
 }
 
 async function runAll() {
-  if (!window.confirm("Run every test defined for this platform and user?")) return;
+  if (!armed(el["run-all"], "Click again to run every test")) return;
   el["run-all"].disabled = true;
   try {
     await post("api/run", { all: true });
@@ -505,6 +524,7 @@ async function runAll() {
     notice(`Could not start the suite: ${error.message}`, "error");
   } finally {
     el["run-all"].disabled = false;
+    el["run-all"].textContent = el["run-all"].dataset.label || "Run all";
   }
 }
 
