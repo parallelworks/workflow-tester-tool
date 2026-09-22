@@ -297,6 +297,9 @@ class TestRun:
                     self.rename_artifact_dir(None)
                     return self.finish()
                 self.check_phase()
+                if not self.run_setup():
+                    self.rename_artifact_dir(None)
+                    return self.finish()
                 self.snapshot_processes()
                 if not self.launch():
                     return self.finish()
@@ -352,8 +355,22 @@ class TestRun:
                                  else "cold" if present == 0 else "partial")
         self.log("phase %s (%d of %d markers present)" % (self.outcome["phase"], present, len(markers)))
 
+    def run_setup(self) -> bool:
+        """The test's setup snippet on the target, before the launch (idempotent by contract)."""
+        if not self.test.setup:
+            return True
+        if not self._login_node():
+            self.log("setup skipped: the target has no login node")
+            return True
+        r = self.pw.ssh(self.target.resource, self.test.setup, timeout=300)
+        if r.rc != 0:
+            self.fail("launch", "setup failed: %s" % (r.one_line() or "exit %d" % r.rc))
+            return False
+        self.log("setup done")
+        return True
+
     def snapshot_processes(self) -> None:
-        if not self.test.leftover_patterns or not self._login_node():
+        if not (self.test.leftover_patterns or self.test.leftover_commands) or not self._login_node():
             return
         r = self.pw.ssh(self.target.resource, "ps -u $USER -o pid=", timeout=120)
         if r.rc == 0:
@@ -493,7 +510,8 @@ class TestRun:
 
     def check_leftovers(self) -> str:
         patterns = self.test.leftover_patterns
-        if not patterns or not self._login_node():
+        commands = self.test.leftover_commands
+        if not (patterns or commands) or not self._login_node():
             return "ok"
         skip = ",".join(self.preexisting)
         # Processes that predate the launch cannot be leftovers. The remote shell's
@@ -505,6 +523,9 @@ class TestRun:
         checks = ["echo p%d=$(%s | grep -c -- '[%s]%s')" % (i, ps, p[0], p[1:].replace("'", "'\\''"))
                   for i, p in enumerate(patterns)]
         names = {"p%d" % i: "process:" + p for i, p in enumerate(patterns)}
+        for i, (label, snippet) in enumerate(commands.items()):
+            checks.append("echo c%d=$(%s)" % (i, snippet))
+            names["c%d" % i] = label
         if self.target.node == "compute":
             checks.append("echo squeue=$( (command -v squeue >/dev/null && squeue -h -u $USER) 2>/dev/null | wc -l)")
             checks.append("echo qstat=$( (command -v qstat >/dev/null && qstat -u $USER) 2>/dev/null | grep -c '^[0-9]')")

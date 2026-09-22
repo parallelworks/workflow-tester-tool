@@ -12,9 +12,10 @@ probe/server.py         dashboard server: static web/ plus the JSON API
 web/                    index.html, app.js, styles.css (no build step, no external assets)
 tests/                  test definitions shipped with this repository
 selftest/               offline unit tests with a mock pw CLI, browser check
+tools/import_workflow_tests.py  converts the workflows repository's recorded tests into definitions
 workflow/workflow.yaml  platform workflow: the two dashboards
 workflow/run-tests.yaml platform workflow: run all or selected tests once
-.github/workflows/      dashboard.yml deploys workflow.yaml; run-tests.yml deploys run-tests.yaml (manual or nightly)
+.github/workflows/      dashboard.yml deploys workflow.yaml; run-tests.yml deploys run-tests.yaml
 ```
 
 No third-party Python packages. The code targets Python 3.8; cluster login nodes run
@@ -30,7 +31,7 @@ No platform needed. `selftest/mockbin/pw` stands in for the CLI and follows a JS
 configuration (see its docstring); every test also gets a small local git repository
 shaped like `parallelworks/workflows`. Covered: definition validation, target
 derivation, every verdict path (pass, skip, launch failure, run error, timeout,
-leftovers, `--keep`), selection by file, record and directory layout, bucket upload,
+setup, leftovers, `--keep`), selection by file, record and directory layout, bucket upload,
 the results reader (regressions, running detection, malformed records) and the server
 API including path safety and the read-only refusal of admin actions. Under two minutes.
 
@@ -55,17 +56,19 @@ Node 22 or newer. Destructive buttons ask for a second click instead of
 3. Workflow YAML: one shallow `git fetch --depth 1` per `(repo, ref)` per suite run, the
    YAML materialised with sparse checkout. Its HEAD is `workflow.commit`.
 4. Under a lock per `(resource, workflow_name)`, so two tests of one workflow never
-   install into the same directory at once: `warm_marker` check and process snapshot
-   over `pw ssh`, then `pw workflows run --trust <local yaml> -i <inputs> --name
-   "probe: <id>" -o json`, retried on transient errors.
+   install into the same directory at once: `warm_marker` check, `setup` snippet and
+   process snapshot over `pw ssh`, then `pw workflows run --trust <local yaml> -i
+   <inputs> --name "probe: <id>" -o json`, retried on transient errors. A failing setup
+   fails the test at `launch`.
 5. Poll `pw workflows runs view -o json` every 15 s until a final status, the timeout
    (then `pw workflows runs cancel`) or an interrupt.
 6. Verdict: `completed` passes; anything else fails at `run` with the first error
    annotation of `pw workflows runs errors`. The workflow, not PROBE, checks that its
    service is healthy before it completes.
 7. Teardown: every endpoint named `*-<slug>` is deleted and waited for, then the
-   `leftover_patterns` check runs over `pw ssh`, retried for two minutes. A run that
-   registered no endpoint has nothing to delete; every test is treated the same.
+   `leftover_patterns` and `leftover_commands` checks run over `pw ssh`, retried for two
+   minutes. A run that registered no endpoint has nothing to delete; every test is
+   treated the same.
 8. `record.json` is written into the execution directory (atomically), then the
    directory is uploaded to the bucket (`--bucket`). Each execution has its own
    directory, so uploads never overwrite another runner's results. A failed upload is
@@ -161,9 +164,9 @@ in error, which the GitHub action reports.
 The GitHub actions install the `pw` CLI on the runner, authenticate with the platform's
 repository secret, write `inputs.json`, and `pw workflows run --trust` the YAML from the
 checked-out repository. `dashboard.yml` passes the same secret as the dashboards' API
-key. `run-tests.yml` also has a nightly `schedule`; without dispatch inputs it reads the
-repository variables `PROBE_PLATFORM`, `PROBE_RESOURCE`, `PROBE_BUCKET` and
-`PROBE_BUCKET_PATH`.
+key. Both are manual (`workflow_dispatch`); a `schedule` trigger on `run-tests.yml`
+would run the suite periodically, with the inputs then taken from defaults or
+repository variables.
 
 Validate a change with `pw workflows run --trust --dry-run -i inputs.json
 /abs/path/workflow/<file>.yaml`. The `code` inputs pick the repository and branch of
@@ -174,8 +177,10 @@ this code, so a development branch is tested by pointing `code.branch` at it.
 Copy a file from `tests/`, give it a new `name`, change the target and inputs, and check
 it with `python3 -m probe list --tests tests`, which also notes files that are not at
 `<platform>/<user>/<workflow_name>/<name>.json`. The inputs are the form payload of the
-workflow; the recorded tests under `workflows/<name>/tests/<variant>/` in the workflows
-repository are a good source. Keep `timeout_s` above the cold-install time of the
+workflow. The recorded tests under `workflows/<name>/tests/<variant>/` in the workflows
+repository convert with `tools/import_workflow_tests.py` (their `_test` object maps to
+`timeout_s`, `warm_marker`, `leftover_patterns`, `leftover_commands` and `setup`), which
+is how `tests/` was produced. Keep `timeout_s` above the cold-install time of the
 workflow on that system. A `script_submitter` test needs `define_cleanup_script: false`
 in its inputs or the platform rejects the launch.
 

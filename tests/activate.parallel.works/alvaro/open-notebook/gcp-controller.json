@@ -1,0 +1,31 @@
+{
+  "name": "gcp-controller",
+  "platform": "activate.parallel.works",
+  "user": "alvaro",
+  "workflow_name": "open-notebook",
+  "workflow": {
+    "repo": "github.com/parallelworks/workflows",
+    "path": "workflows/open-notebook/yamls/general.yaml",
+    "ref": "canary"
+  },
+  "timeout_s": 2400,
+  "leftover_patterns": [
+    "open-notebook",
+    "docker compose",
+    "pw endpoints run"
+  ],
+  "leftover_commands": {
+    "docker_containers": "(docker ps -aq --filter name=open_notebook 2>/dev/null || sudo -n docker ps -aq --filter name=open_notebook 2>/dev/null || echo ERR) | wc -l"
+  },
+  "inputs": {
+    "cluster": {
+      "resource": "pw://alvaro/gcpsmall",
+      "scheduler": false
+    },
+    "service": {
+      "opennotebook_encryption_key": "workflow-test-key-not-a-secret",
+      "notebook_data_dir": "./notebook_data",
+      "surreal_data_dir": "./surreal_data"
+    }
+  }
+}

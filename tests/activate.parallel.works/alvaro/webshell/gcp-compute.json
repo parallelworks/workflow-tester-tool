@@ -1,0 +1,30 @@
+{
+  "name": "gcp-compute",
+  "platform": "activate.parallel.works",
+  "user": "alvaro",
+  "workflow_name": "webshell",
+  "workflow": {
+    "repo": "github.com/parallelworks/workflows",
+    "path": "workflows/webshell/yamls/general.yaml",
+    "ref": "canary"
+  },
+  "timeout_s": 1800,
+  "warm_marker": "${HOME}/pw/software/noVNC-1.3.0/ttyd.x86_64",
+  "leftover_patterns": [
+    "ttyd",
+    "SCREEN",
+    "pw endpoints run"
+  ],
+  "inputs": {
+    "cluster": {
+      "resource": "pw://alvaro/gcpsmall",
+      "scheduler": true,
+      "slurm": {
+        "is_enabled": true,
+        "partition": "compute",
+        "time": "00:30:00"
+      }
+    },
+    "service": {}
+  }
+}

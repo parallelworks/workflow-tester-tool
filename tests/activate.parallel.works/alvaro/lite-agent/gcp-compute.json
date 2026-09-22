@@ -1,17 +1,17 @@
 {
-  "name": "gcpsmall-compute",
+  "name": "gcp-compute",
   "platform": "activate.parallel.works",
   "user": "alvaro",
-  "workflow_name": "webshell",
+  "workflow_name": "lite-agent",
   "workflow": {
     "repo": "github.com/parallelworks/workflows",
-    "path": "workflows/webshell/yamls/general.yaml",
+    "path": "workflows/lite-agent/yamls/general.yaml",
     "ref": "canary"
   },
   "timeout_s": 1800,
-  "warm_marker": "${HOME}/pw/software/noVNC-1.3.0/ttyd.x86_64",
+  "warm_marker": "${HOME}/pw/software/agent-venv",
   "leftover_patterns": [
-    "ttyd",
+    "agent_server",
     "pw endpoints run"
   ],
   "inputs": {
@@ -24,6 +24,9 @@
         "time": "00:30:00"
       }
     },
-    "service": {}
+    "service": {
+      "model": "org:glm/glm-5.1",
+      "allocation": "Owners"
+    }
   }
 }

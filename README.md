@@ -25,7 +25,7 @@ workflow stops working on a system.
 | Who runs the tests | How |
 |---|---|
 | Admin dashboard | `Run all`, or open a test and `Rerun test` |
-| GitHub action **Run PROBE tests** | manual, with `all` or a list of test files, or nightly at 06:00 UTC |
+| GitHub action **Run PROBE tests** | manual, with `all` or a list of test files |
 | Platform, by hand | `pw workflows run --trust -i inputs.json /abs/path/workflow/run-tests.yaml` |
 | Shell with the `pw` CLI | `python3 -m probe run ...` |
 
@@ -60,9 +60,9 @@ results reach the bucket right after. A request that overlaps a run in progress 
 refused.
 
 The GitHub action **Run PROBE tests** deploys `workflow/run-tests.yaml`, waits, and
-turns red when a test fails. For the nightly schedule set the repository variables
-`PROBE_PLATFORM`, `PROBE_RESOURCE`, `PROBE_BUCKET` and `PROBE_BUCKET_PATH`; the platform
-API keys are the repository secrets `ACTIVATE_PARALLEL_WORKS` and `ACTIVATE_HPC_MIL`.
+turns red when a test fails. Both actions authenticate with the repository secrets
+`ACTIVATE_PARALLEL_WORKS` and `ACTIVATE_HPC_MIL` (platform API keys). A `schedule`
+trigger can be added to `run-tests.yml` to run the suite periodically.
 
 From a shell (the `pw` context selects platform and user; `PW_PLATFORM_HOST` and
 `PW_USER` override it):
@@ -120,6 +120,8 @@ with the same id, or an unknown key, are errors.
 | `inputs` | Passed verbatim to `pw workflows run -i`. |
 | `warm_marker` | Optional. Path, or list of paths, on the target system. All present before launch: phase `warm`; none: `cold`; some: `partial`. |
 | `leftover_patterns` | Optional. Process command-line patterns that must be gone from the target system after cleanup; compute tests also require an empty scheduler queue. Processes that existed before the launch are ignored. |
+| `leftover_commands` | Optional. `{name: shell snippet}`; each snippet runs on the target after cleanup and must print `0`, for example `docker ps -q \| wc -l` for containers `ps` cannot see. |
+| `setup` | Optional. Shell snippet run on the target before the launch, for example to seed input files. Must be safe to repeat. |
 
 What happens to a test:
 
@@ -191,6 +193,14 @@ records. To reclaim space, delete the large files of old executions but keep
 Every key is always present; not applicable or unknown is null. A regression is a
 `pass` followed by a `fail` for the same test, ignoring skips in between; the dashboard
 marks it.
+
+The tests in `tests/` are the end-to-end tests recorded in the workflows repository,
+converted with `tools/import_workflow_tests.py`:
+
+```bash
+python3 tools/import_workflow_tests.py /path/to/workflows --variant general \
+    --platform activate.parallel.works --user alvaro --out tests
+```
 
 ## Development
 

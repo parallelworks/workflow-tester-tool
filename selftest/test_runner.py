@@ -190,6 +190,33 @@ class RunnerTests(RunnerCase):
         self.assertEqual(outcome["phase"], "partial")
         self.assertEqual(outcome["cleanup"], "leftover")
 
+    def test_setup_and_leftover_commands(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition(
+            setup="mkdir -p $HOME/pw/tests/seed", leftover_commands={"docker": "docker ps -q | wc -l"}))
+        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}},
+                        "endpoint": {WEBSHELL: "webshell"}, "ssh": {"echo c0=": "c0=2"}})
+        with mock.patch.object(runner, "LEFTOVER_WAIT_S", 0):
+            code, out = self.run_suite()
+        self.assertEqual(code, 0, out)
+        outcome = self.records(CONTROLLER)[0]["outcome"]
+        self.assertEqual((outcome["status"], outcome["cleanup"]), ("pass", "leftover"))
+        ssh_calls = [c for c in self.calls() if " ssh pw://alvaro/gcpsmall " in c]
+        self.assertTrue(any("mkdir -p $HOME/pw/tests/seed" in c for c in ssh_calls), ssh_calls)
+        self.assertTrue(any("docker ps -q | wc -l" in c for c in ssh_calls), ssh_calls)
+        log = (self.results_dir / CONTROLLER / self.artifact_dirs(CONTROLLER)[0] / "run.log").read_text()
+        self.assertIn("setup done", log)
+        self.assertIn("leftovers after 0s: docker", log)
+
+    def test_setup_failure_fails_at_launch(self):
+        self.write_test("webshell/gcpsmall-controller.json", definition(setup="exit 3"))
+        self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}}, "ssh_fail": True})
+        code, _ = self.run_suite()
+        self.assertEqual(code, 1)
+        outcome = self.records(CONTROLLER)[0]["outcome"]
+        self.assertEqual((outcome["status"], outcome["failed_at"]), ("fail", "launch"))
+        self.assertIn("setup failed", outcome["error"])
+        self.assertFalse(any(" run --trust " in c for c in self.calls()))
+
     def test_ssh_failure_gives_unknown_cleanup_and_null_phase(self):
         self.write_test("webshell/gcpsmall-controller.json", definition(leftover_patterns=["ttyd"], warm_marker="x"))
         self.configure({"clusters": {"gcpsmall": {"user": "alvaro", "status": "active"}},

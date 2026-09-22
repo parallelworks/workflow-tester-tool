@@ -2,12 +2,9 @@ name: Run PROBE tests
 
 # Runs workflow/run-tests.yaml on the platform: all tests of the platform and
 # user, or the listed test files. Results go to the bucket as each test finishes;
-# open the dashboard and press Refresh to see them. On a schedule the platform,
-# resource and bucket come from the repository variables PROBE_PLATFORM,
-# PROBE_RESOURCE, PROBE_BUCKET and PROBE_BUCKET_PATH, with the defaults below.
+# open the dashboard and press Refresh to see them. Manual only; a `schedule`
+# trigger can be added here to run it periodically.
 on:
-  schedule:
-    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       platform:
@@ -62,15 +59,15 @@ jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      PW_PLATFORM_HOST: ${{ inputs.platform || vars.PROBE_PLATFORM || 'activate.parallel.works' }}
-      RESOURCE: ${{ inputs.resource || vars.PROBE_RESOURCE || 'pw://alvaro/gcpsmall' }}
-      BUCKET: ${{ inputs.bucket || vars.PROBE_BUCKET || 'pw://alvaro/gcpbucket' }}
-      BUCKET_PATH: ${{ inputs.bucket_path || vars.PROBE_BUCKET_PATH || 'probe/results' }}
+      PW_PLATFORM_HOST: ${{ inputs.platform }}
+      RESOURCE: ${{ inputs.resource }}
+      BUCKET: ${{ inputs.bucket }}
+      BUCKET_PATH: ${{ inputs.bucket_path || 'probe/results' }}
       SELECTION: ${{ inputs.selection || 'all' }}
       TESTS_REPO: ${{ inputs.tests_repo }}
       TESTS_BRANCH: ${{ inputs.tests_branch }}
       TESTS_DIRECTORY: ${{ inputs.tests_directory || 'tests' }}
-      WAIT: ${{ github.event_name == 'schedule' || inputs.wait }}
+      WAIT: ${{ inputs.wait }}
       THIS_REPO: ${{ github.server_url }}/${{ github.repository }}.git
       THIS_BRANCH: ${{ github.ref_name }}
     steps:

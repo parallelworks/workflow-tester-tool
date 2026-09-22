@@ -1,5 +1,5 @@
 {
-  "name": "gcpsmall-controller",
+  "name": "gcp-compute",
   "platform": "activate.parallel.works",
   "user": "alvaro",
   "workflow_name": "jupyterlab",
@@ -8,7 +8,7 @@
     "path": "workflows/jupyterlab/yamls/general.yaml",
     "ref": "canary"
   },
-  "timeout_s": 1800,
+  "timeout_s": 2400,
   "warm_marker": "${HOME}/pw/software/.miniconda3c",
   "leftover_patterns": [
     "jupyter-lab",
@@ -17,7 +17,12 @@
   "inputs": {
     "cluster": {
       "resource": "pw://alvaro/gcpsmall",
-      "scheduler": false
+      "scheduler": true,
+      "slurm": {
+        "is_enabled": true,
+        "partition": "compute",
+        "time": "00:30:00"
+      }
     },
     "service": {
       "notebook_dir": "${HOME}",
